@@ -43,7 +43,8 @@ services:
     image: ghcr.io/get-convex/convex-backend:latest
     environment:
       POSTGRES_URL: postgres://obsync:obsync@postgres:5432
-      POSTGRES_DB: obsync
+      INSTANCE_NAME: obsync
+      DO_NOT_REQUIRE_SSL: "1"
     ports:
       - "3210:3210"
     depends_on:
