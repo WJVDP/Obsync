@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsync.local/schemas/PullResponse.json",
+  "title": "PullResponse",
+  "description": "Operation stream page returned by cursor-based pull.",
+  "type": "object",
+  "required": ["watermark", "ops"],
+  "properties": {
+    "watermark": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Highest sequence included in this response."
+    },
+    "ops": {
+      "type": "array",
+      "description": "Ordered operation list greater than requested cursor.",
+      "items": {
+        "type": "object",
+        "required": ["seq", "vaultId", "fileId", "opType", "payload", "createdAt"],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Authoritative server sequence."
+          },
+          "vaultId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Vault identifier."
+          },
+          "fileId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "File identifier if bound to a file entity."
+          },
+          "opType": {
+            "type": "string",
+            "enum": ["md_update", "file_create", "file_rename", "file_delete", "blob_ref", "key_rotate"],
+            "description": "Operation category."
+          },
+          "payload": {
+            "type": "object",
+            "description": "Operation payload emitted by original device.",
+            "additionalProperties": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Server timestamp when operation was persisted."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

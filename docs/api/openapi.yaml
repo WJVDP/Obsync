@@ -1,0 +1,509 @@
+openapi: 3.1.0
+info:
+  title: Obsync Sync API
+  version: 1.0.0
+  description: |
+    Self-hosted realtime sync API for Obsidian vaults.
+    This contract is optimized for both human developers and LLM/OpenClaw automation clients.
+servers:
+  - url: http://localhost:8080
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Vaults
+  - name: Sync
+  - name: Blobs
+  - name: Keys
+  - name: Admin
+
+paths:
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate or bootstrap a local account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+            examples:
+              minimal:
+                value: { email: user@example.com, password: secret }
+              full:
+                value:
+                  email: user@example.com
+                  password: strong-passphrase
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, userId]
+                properties:
+                  token: { type: string }
+                  userId: { type: string, format: uuid }
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /v1/apikeys:
+    post:
+      tags: [Auth]
+      summary: Create a scoped API key for automation clients
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes]
+              properties:
+                name: { type: string }
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                    enum: [read, write, admin]
+            examples:
+              minimal:
+                value:
+                  name: openclaw-readwrite
+                  scopes: [read, write]
+              full:
+                value:
+                  name: nightly-agent
+                  scopes: [read, write, admin]
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, scopes, apiKey]
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string }
+                  scopes:
+                    type: array
+                    items:
+                      type: string
+                  apiKey: { type: string }
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /v1/vaults:
+    get:
+      tags: [Vaults]
+      summary: List vaults for authenticated owner
+      responses:
+        '200':
+          description: Vault list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, name, created_at]
+                  properties:
+                    id: { type: string, format: uuid }
+                    name: { type: string }
+                    created_at: { type: string, format: date-time }
+        '403':
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Vaults]
+      summary: Create vault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+            examples:
+              minimal:
+                value: { name: Personal Vault }
+              full:
+                value:
+                  name: Project Atlas
+      responses:
+        '201':
+          description: Vault created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string }
+                  created_at: { type: string, format: date-time }
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /v1/vaults/{vaultId}/sync/push:
+    post:
+      tags: [Sync]
+      summary: Push a batch of sync operations
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../schemas/SyncBatchPushRequest.json
+            examples:
+              minimal:
+                value:
+                  deviceId: 29fce7af-f596-4ec0-84ad-f8a362ff8468
+                  cursor: 0
+                  ops:
+                    - idempotencyKey: op-001
+                      deviceId: 29fce7af-f596-4ec0-84ad-f8a362ff8468
+                      path: daily.md
+                      opType: md_update
+                      logicalClock: 1
+                      payload: { yUpdateBase64: AQID }
+                      createdAt: 2026-02-23T22:00:00Z
+              full:
+                value:
+                  deviceId: 29fce7af-f596-4ec0-84ad-f8a362ff8468
+                  cursor: 130
+                  ops:
+                    - idempotencyKey: op-131
+                      deviceId: 29fce7af-f596-4ec0-84ad-f8a362ff8468
+                      fileId: 3f45f9f3-d8f6-478f-8f3c-cd10fb2e5f53
+                      path: notes/project/plan.md
+                      opType: md_update
+                      logicalClock: 202
+                      payload:
+                        yUpdateBase64: AQICAAA=
+                        stateVectorBase64: AAE=
+                      createdAt: 2026-02-23T22:01:10Z
+      responses:
+        '200':
+          description: Batch acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: ../schemas/SyncBatchPushResponse.json
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/vaults/{vaultId}/sync/pull:
+    get:
+      tags: [Sync]
+      summary: Pull operations newer than a cursor
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+        - name: since
+          in: query
+          required: true
+          schema: { type: integer, minimum: 0 }
+        - name: deviceId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Operation page
+          content:
+            application/json:
+              schema:
+                $ref: ../schemas/PullResponse.json
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/vaults/{vaultId}/blobs/init:
+    post:
+      tags: [Blobs]
+      summary: Initialize or resume blob upload
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../schemas/BlobInitRequest.json
+            examples:
+              minimal:
+                value:
+                  hash: 23ef0a
+                  size: 1024
+                  chunkCount: 1
+                  cipherAlg: AES-256-GCM
+              full:
+                value:
+                  hash: 74e8d066fbce2f35de4eb2ca36f4f537f6d0af5f08f33f27b44f3c53ad197ecb
+                  size: 1428000
+                  chunkCount: 2
+                  cipherAlg: AES-256-GCM
+      responses:
+        '201':
+          description: Upload session initialized
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [uploadId, hash, missingIndices]
+                properties:
+                  uploadId: { type: string, format: uuid }
+                  hash: { type: string }
+                  missingIndices:
+                    type: array
+                    items: { type: integer, minimum: 0 }
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /v1/vaults/{vaultId}/blobs/{blobHash}/chunks/{index}:
+    put:
+      tags: [Blobs]
+      summary: Upload one encrypted chunk
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+        - name: blobHash
+          in: path
+          required: true
+          schema: { type: string }
+        - name: index
+          in: path
+          required: true
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chunkHash, size, cipherTextBase64]
+              properties:
+                chunkHash: { type: string }
+                size: { type: integer, minimum: 1 }
+                cipherTextBase64: { type: string }
+            examples:
+              minimal:
+                value:
+                  chunkHash: 9b0f...
+                  size: 1024
+                  cipherTextBase64: AQIDBA==
+              full:
+                value:
+                  chunkHash: a58f7f5f221df33234f4f0cf6f08fb73a89f2f83ea7b8d0c4f3596f91abb03e4
+                  size: 1048576
+                  cipherTextBase64: VGhpcyBpcyBhbiBleGFtcGxlLg==
+      responses:
+        '200':
+          description: Chunk persisted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [blobHash, index, persisted]
+                properties:
+                  blobHash: { type: string }
+                  index: { type: integer }
+                  persisted: { type: boolean }
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /v1/vaults/{vaultId}/blobs/{blobHash}/commit:
+    post:
+      tags: [Blobs]
+      summary: Commit blob once all chunks are uploaded
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+        - name: blobHash
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../schemas/BlobCommitRequest.json
+            examples:
+              minimal:
+                value:
+                  hash: 23ef0a
+                  expectedChunkCount: 1
+                  expectedSize: 1024
+              full:
+                value:
+                  hash: 74e8d066fbce2f35de4eb2ca36f4f537f6d0af5f08f33f27b44f3c53ad197ecb
+                  expectedChunkCount: 2
+                  expectedSize: 1428000
+      responses:
+        '200':
+          description: Blob committed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hash, committed]
+                properties:
+                  hash: { type: string }
+                  committed: { type: boolean }
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /v1/vaults/{vaultId}/status:
+    get:
+      tags: [Vaults]
+      summary: Get vault sync status snapshot
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+      responses:
+        '200':
+          description: Vault status
+          content:
+            application/json:
+              schema:
+                $ref: ../schemas/VaultStatus.json
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /v1/vaults/{vaultId}/keys/rotate:
+    post:
+      tags: [Keys]
+      summary: Rotate encrypted vault key envelopes
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, envelopes]
+              properties:
+                version:
+                  type: integer
+                  minimum: 1
+                envelopes:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [deviceId, encryptedVaultKey]
+                    properties:
+                      deviceId: { type: string, format: uuid }
+                      encryptedVaultKey: { type: string }
+            examples:
+              minimal:
+                value:
+                  version: 2
+                  envelopes:
+                    - deviceId: 29fce7af-f596-4ec0-84ad-f8a362ff8468
+                      encryptedVaultKey: BASE64ENC
+              full:
+                value:
+                  version: 4
+                  envelopes:
+                    - deviceId: 29fce7af-f596-4ec0-84ad-f8a362ff8468
+                      encryptedVaultKey: BASE64ENC1
+                    - deviceId: 8e6f7792-510c-46d1-a51e-81f8eecb9ef1
+                      encryptedVaultKey: BASE64ENC2
+      responses:
+        '200':
+          description: Envelopes upserted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [vaultId, version, updated]
+                properties:
+                  vaultId: { type: string, format: uuid }
+                  version: { type: integer }
+                  updated: { type: integer }
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/health:
+    get:
+      tags: [Admin]
+      summary: System health
+      security: []
+      responses:
+        '200':
+          description: Health snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, db, serverTime]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, degraded]
+                  db: { type: boolean }
+                  serverTime:
+                    type: string
+                    format: date-time
+
+  /v1/vaults/{vaultId}/realtime:
+    get:
+      tags: [Sync]
+      summary: Open websocket stream for realtime operation fanout
+      description: |
+        Upgrade to WebSocket. Authenticate with `token` query parameter in self-host plugin mode.
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+        - name: since
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '101':
+          description: Switching protocols (websocket)
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT or API key
+
+  parameters:
+    VaultId:
+      name: vaultId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Error:
+      description: Error envelope
+      content:
+        application/json:
+          schema:
+            $ref: ../schemas/ErrorEnvelope.json

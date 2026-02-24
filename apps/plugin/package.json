@@ -1,0 +1,29 @@
+{
+  "name": "@obsync/plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:obsidian": "node esbuild.config.mjs",
+    "install:obsidian": "npm run build:obsidian && tsx scripts/install.ts",
+    "dev:obsidian": "node esbuild.config.mjs --watch",
+    "smoke": "tsx scripts/smoke.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "echo 'No lint configured for @obsync/plugin'"
+  },
+  "dependencies": {
+    "@obsync/shared": "0.1.0",
+    "uuid": "^11.0.3",
+    "yjs": "^13.6.24"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.8.10",
+    "tsx": "^4.20.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsync.local/schemas/SyncBatchPushRequest.json",
+  "title": "SyncBatchPushRequest",
+  "description": "Pushes a batch of operations from one device for a specific vault.",
+  "type": "object",
+  "required": ["deviceId", "cursor", "ops"],
+  "properties": {
+    "deviceId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Device submitting the batch."
+    },
+    "cursor": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Last server sequence acknowledged by this device."
+    },
+    "ops": {
+      "type": "array",
+      "description": "Ordered operation batch. Server preserves relative order.",
+      "items": {
+        "$ref": "./SyncOp.json"
+      },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false
+}

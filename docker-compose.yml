@@ -1,0 +1,121 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: obsync
+      POSTGRES_USER: obsync
+      POSTGRES_PASSWORD: obsync
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U obsync -d obsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc alias set obsync http://minio:9000 minioadmin minioadmin) do echo 'waiting for minio' && sleep 2; done;
+      /usr/bin/mc mb -p obsync/obsync-blobs || true;
+      /usr/bin/mc anonymous set none obsync/obsync-blobs || true;
+      exit 0;
+      "
+
+  convex-backend:
+    image: ghcr.io/get-convex/convex-backend:latest
+    environment:
+      POSTGRES_URL: postgres://obsync:obsync@postgres:5432
+      POSTGRES_DB: obsync
+    ports:
+      - "3210:3210"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      JWT_SECRET: change-me
+      DATABASE_URL: postgres://obsync:obsync@postgres:5432/obsync
+      DATA_DIR: /app/data
+      BLOB_STORE_MODE: minio
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_BUCKET: obsync-blobs
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_REGION: us-east-1
+    ports:
+      - "8080:8080"
+    volumes:
+      - server_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  loki:
+    image: grafana/loki:3.1.1
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./infra/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+    ports:
+      - "3100:3100"
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.112.0
+    command: ["--config=/etc/otel-collector-config.yml"]
+    volumes:
+      - ./infra/otel/collector.yml:/etc/otel-collector-config.yml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+
+volumes:
+  postgres_data:
+  minio_data:
+  server_data:
