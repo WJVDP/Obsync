@@ -1,0 +1,66 @@
+{
+  "version": "1.0.0",
+  "recipes": [
+    {
+      "name": "pull_latest_changes",
+      "description": "Fetch and apply all operations newer than local cursor.",
+      "requiredScope": "read",
+      "steps": [
+        {
+          "method": "GET",
+          "path": "/v1/vaults/{vaultId}/sync/pull",
+          "query": { "since": "<cursor>", "deviceId": "<deviceId>" }
+        },
+        {
+          "action": "apply_ops_in_sequence",
+          "input": "response.ops"
+        },
+        {
+          "action": "persist_cursor",
+          "input": "response.watermark"
+        }
+      ]
+    },
+    {
+      "name": "upload_blob_and_reference",
+      "description": "Upload encrypted blob chunks, commit blob, then push blob_ref operation.",
+      "requiredScope": "write",
+      "steps": [
+        {
+          "method": "POST",
+          "path": "/v1/vaults/{vaultId}/blobs/init",
+          "bodySchema": "BlobInitRequest"
+        },
+        {
+          "action": "for_each_missing_index_upload_chunk",
+          "method": "PUT",
+          "path": "/v1/vaults/{vaultId}/blobs/{blobHash}/chunks/{index}"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/vaults/{vaultId}/blobs/{blobHash}/commit",
+          "bodySchema": "BlobCommitRequest"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/vaults/{vaultId}/sync/push",
+          "bodySchema": "SyncBatchPushRequest"
+        }
+      ]
+    },
+    {
+      "name": "rotate_vault_keys",
+      "description": "Rotate encrypted vault key envelopes for active devices.",
+      "requiredScope": "admin",
+      "steps": [
+        {
+          "precondition": "human_approval_required"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/vaults/{vaultId}/keys/rotate"
+        }
+      ]
+    }
+  ]
+}

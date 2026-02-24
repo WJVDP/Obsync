@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsync.local/schemas/ErrorEnvelope.json",
+  "title": "ErrorEnvelope",
+  "description": "Deterministic machine-readable error envelope returned by all endpoints.",
+  "type": "object",
+  "required": ["code", "message"],
+  "properties": {
+    "code": {
+      "type": "string",
+      "description": "Stable error code suitable for programmatic branching."
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable summary of the error."
+    },
+    "remediation": {
+      "type": "string",
+      "description": "Suggested corrective action."
+    },
+    "details": {
+      "type": "object",
+      "description": "Optional structured details for advanced troubleshooting.",
+      "additionalProperties": true
+    },
+    "traceId": {
+      "type": "string",
+      "description": "Correlation id for support and observability systems."
+    }
+  },
+  "additionalProperties": false
+}

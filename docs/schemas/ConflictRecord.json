@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsync.local/schemas/ConflictRecord.json",
+  "title": "ConflictRecord",
+  "description": "Conflict metadata persisted for non-CRDT collisions or path resolution events.",
+  "type": "object",
+  "required": ["id", "vaultId", "fileId", "path", "reason", "createdAt", "resolution"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Conflict row identifier."
+    },
+    "vaultId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Vault containing the conflict."
+    },
+    "fileId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Affected file identifier."
+    },
+    "path": {
+      "type": "string",
+      "description": "Path where collision was detected."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Machine-readable reason label and details."
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Conflict creation timestamp."
+    },
+    "resolution": {
+      "type": "string",
+      "enum": ["pending", "restored", "ignored"],
+      "description": "Current resolution state."
+    }
+  },
+  "additionalProperties": false
+}

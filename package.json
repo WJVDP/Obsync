@@ -1,0 +1,21 @@
+{
+  "name": "obsync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Obsync self-hosted realtime sync stack for Obsidian",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run -w @obsync/shared build && npm run -w @obsync/server build && npm run -w @obsync/plugin build",
+    "dev": "npm run -w @obsync/server dev",
+    "test": "npm run -w @obsync/shared test && npm run -w @obsync/server test && npm run -w @obsync/plugin test",
+    "lint": "npm run -w @obsync/shared lint && npm run -w @obsync/server lint && npm run -w @obsync/plugin lint",
+    "typecheck": "npm run -w @obsync/shared build && npm run -w @obsync/shared typecheck && npm run -w @obsync/server typecheck && npm run -w @obsync/plugin typecheck",
+    "validate:openapi": "npx @redocly/cli lint docs/api/openapi.yaml"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

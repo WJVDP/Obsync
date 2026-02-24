@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsync.local/schemas/BlobCommitRequest.json",
+  "title": "BlobCommitRequest",
+  "description": "Finalizes a blob after all chunks are uploaded.",
+  "type": "object",
+  "required": ["hash", "expectedChunkCount", "expectedSize"],
+  "properties": {
+    "hash": {
+      "type": "string",
+      "description": "Blob hash being committed."
+    },
+    "expectedChunkCount": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Expected number of chunks in the blob."
+    },
+    "expectedSize": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Expected total encrypted byte size."
+    }
+  },
+  "additionalProperties": false
+}

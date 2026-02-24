@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsync.local/schemas/SyncBatchPushResponse.json",
+  "title": "SyncBatchPushResponse",
+  "description": "Server acknowledgement after push processing.",
+  "type": "object",
+  "required": ["acknowledgedSeq", "appliedCount", "missingChunks", "rebaseRequired"],
+  "properties": {
+    "acknowledgedSeq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Highest server sequence acknowledged for this batch."
+    },
+    "appliedCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of newly inserted operations (idempotent duplicates excluded)."
+    },
+    "missingChunks": {
+      "type": "array",
+      "description": "Chunks required before related blob references become committed.",
+      "items": {
+        "type": "object",
+        "required": ["blobHash", "index"],
+        "properties": {
+          "blobHash": {
+            "type": "string",
+            "description": "Blob hash with missing payload."
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Missing chunk index."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "rebaseRequired": {
+      "type": "boolean",
+      "description": "True when client must refresh base state before retrying conflicting operations."
+    }
+  },
+  "additionalProperties": false
+}

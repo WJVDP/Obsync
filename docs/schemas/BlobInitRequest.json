@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsync.local/schemas/BlobInitRequest.json",
+  "title": "BlobInitRequest",
+  "description": "Starts or resumes a blob upload session.",
+  "type": "object",
+  "required": ["hash", "size", "chunkCount", "cipherAlg"],
+  "properties": {
+    "hash": {
+      "type": "string",
+      "description": "Content hash of encrypted blob payload."
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Encrypted byte length."
+    },
+    "chunkCount": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of chunks expected in upload."
+    },
+    "cipherAlg": {
+      "type": "string",
+      "description": "Client encryption algorithm identifier.",
+      "default": "AES-256-GCM"
+    }
+  },
+  "additionalProperties": false
+}

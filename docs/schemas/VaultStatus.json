@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsync.local/schemas/VaultStatus.json",
+  "title": "VaultStatus",
+  "description": "Realtime status snapshot for one vault.",
+  "type": "object",
+  "required": ["vaultId", "latestSeq", "activeDevices", "pendingBlobCount", "serverTime"],
+  "properties": {
+    "vaultId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Vault identifier."
+    },
+    "latestSeq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Latest operation sequence persisted for vault."
+    },
+    "activeDevices": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Approximate active devices for owner within staleness window."
+    },
+    "pendingBlobCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Blobs initialized but not committed."
+    },
+    "serverTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Server current timestamp."
+    }
+  },
+  "additionalProperties": false
+}
