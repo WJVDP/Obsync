@@ -11,7 +11,14 @@ const ctx = {
   target: "es2020",
   sourcemap: isWatch ? "inline" : false,
   outfile: "dist-obsidian/main.js",
-  external: ["obsidian", "electron", "@codemirror/state", "@codemirror/view", "@lezer/common"]
+  external: [
+    "obsidian",
+    "electron",
+    "node:crypto",
+    "@codemirror/state",
+    "@codemirror/view",
+    "@lezer/common"
+  ]
 };
 
 mkdirSync("dist-obsidian", { recursive: true });

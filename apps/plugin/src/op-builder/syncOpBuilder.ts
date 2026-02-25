@@ -36,6 +36,7 @@ export class SyncOpBuilder {
         path: event.path,
         oldPath: event.oldPath,
         content: event.content,
+        binaryContentBase64: event.binaryContentBase64,
         timestamp: event.timestamp
       },
       createdAt: new Date().toISOString()

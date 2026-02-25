@@ -24,10 +24,9 @@
       "description": "Originating device identifier."
     },
     "fileId": {
-      "type": "string",
+      "type": ["string", "null"],
       "format": "uuid",
-      "description": "Stable file identity if known.",
-      "nullable": true
+      "description": "Stable file identity if known."
     },
     "path": {
       "type": "string",

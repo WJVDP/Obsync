@@ -1,77 +1,98 @@
-# Obsidian Plugin Install and Smoke Test
+# Obsidian Plugin Install and Configuration
 
-## Build plugin artifacts
+This guide is the plugin-specific reference. For full stack onboarding, start at [README.md](../../README.md).
 
-From repository root:
+## Build and Install
+
+From repo root:
 
 ```bash
 npm install
 npm run -w @obsync/plugin build:obsidian
+npm run -w @obsync/plugin install:obsidian -- "/absolute/path/to/your/vault"
 ```
 
-Build output:
+Installed plugin directory:
 
-- `apps/plugin/dist-obsidian/main.js`
-- `apps/plugin/dist-obsidian/manifest.json`
+- `<vault>/.obsidian/plugins/obsync/`
 
-## One-command install
+Required files:
 
-From repository root:
+- `main.js`
+- `manifest.json`
 
-```bash
-npm run -w @obsync/plugin install:obsidian -- /absolute/path/to/your/vault
-```
+## Enable in Obsidian
 
-Alternative using env var:
+1. Open Obsidian vault.
+2. Go to Settings -> Community Plugins.
+3. Click `Reload plugins`.
+4. Enable `Obsync`.
 
-```bash
-OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault npm run -w @obsync/plugin install:obsidian
-```
+## Plugin Settings
 
-## Install into Obsidian
+Required:
 
-1. Open your vault folder.
-2. Create plugin dir if needed:
-   - `<vault>/.obsidian/plugins/obsync/`
-3. Copy plugin artifacts:
-   - `apps/plugin/dist-obsidian/main.js` -> `<vault>/.obsidian/plugins/obsync/main.js`
-   - `apps/plugin/dist-obsidian/manifest.json` -> `<vault>/.obsidian/plugins/obsync/manifest.json`
-4. In Obsidian:
-   - Settings -> Community Plugins -> Reload plugins
-   - Enable `Obsync`
+1. `Base URL`: `http://<server-host>:8080`
+2. `Vault ID`: UUID returned by `POST /v1/vaults`
 
-## Configure plugin
+Authentication:
 
-In Settings -> Obsync:
+1. `API Token` (recommended for automation and long-lived setups), or
+2. `Email` + `Password` for user login
 
-1. `Base URL`: `http://localhost:8080`
-2. `Vault ID`: use created vault id from API.
-3. Choose auth mode:
-   - `API Token`, or
-   - `Email` + `Password`
-4. Keep `Realtime` enabled for websocket sync.
-5. Click `Connect`.
+Connection toggles:
 
-## Local smoke test (plugin runtime harness)
+1. `Realtime`: websocket stream
+2. `Auto connect on load`: connects when Obsidian starts
 
-This smoke script modifies a markdown file and verifies push/pull through the same plugin sync engine modules:
+## Connection Status Signals
 
-```bash
-npm run -w @obsync/plugin smoke
-```
+Obsync surfaces status in:
 
-Optional overrides:
+1. Status bar text (`Live`, `Polling`, `Reconnecting`, `Error`)
+2. Ribbon icon state
+3. Top of plugin settings page (`Connection: ...`)
 
-```bash
-OBSYNC_BASE_URL=http://localhost:8080 \
-OBSYNC_EMAIL=user@example.com \
-OBSYNC_PASSWORD=secret \
-OBSYNC_VAULT_ID=<vault-id> \
-npm run -w @obsync/plugin smoke
-```
+Expected steady states:
 
-Expected result:
+1. `Live`: websocket active
+2. `Polling`: fallback pull mode
 
-- JSON output with `ok: true`
-- `pulledOps >= 1`
-- `lastOp.opType` equal to `md_update`
+## Files Used by Plugin
+
+1. Main settings file:
+   - `<vault>/.obsidian/plugins/obsync/settings.json`
+2. Fallback settings path:
+   - `<vault>/.obsync/settings.json`
+3. Sync state (outbox/cursors/key cache):
+   - `<vault>/.obsidian/plugins/obsync/data.json`
+
+## Quick Smoke Test
+
+1. Connect plugin.
+2. Create `obsync-local-test.md` on this machine.
+3. Verify sync on other device.
+4. Rename and delete it from the other device and confirm this vault converges.
+
+## Common Failures
+
+### Connect fails with 401/403
+
+1. Verify token or credentials.
+2. If using API key, verify scope includes `read` and `write`.
+
+### `Vault not found`
+
+1. Check `Vault ID` exactly matches server value.
+2. Ensure token belongs to vault owner account.
+
+### Realtime reconnect loop
+
+1. Confirm `/v1/admin/health` is `ok`.
+2. Inspect server logs for websocket auth/scope errors.
+3. Confirm network path from client to `:8080` is reachable.
+
+### Settings reset after reload
+
+1. Confirm plugin can write to vault `.obsidian` directory.
+2. Check presence of `settings.json` in one of the configured settings paths.

@@ -1,55 +1,117 @@
-# Runbook
+# Operations Runbook (VPS First)
 
-## Deploy (Docker Compose)
+This runbook assumes:
 
-1. Copy `.env.example` to `.env`.
-2. Start stack:
-   - `docker compose up -d`
-3. Verify health:
-   - `curl http://localhost:8080/v1/admin/health`
-4. Access observability:
-   - Grafana: `http://localhost:3000` (`admin` / `admin`)
-   - Prometheus: `http://localhost:9090`
-   - Loki API: `http://localhost:3100`
+1. Obsync server stack runs on a VPS.
+2. Obsidian plugin runs on user desktops/mobile devices.
+3. Deployment model is single-tenant self-host.
 
-## Initial Bootstrap
+## Deploy / Upgrade
 
-1. Login to create first local account:
-   - `POST /v1/auth/login`
-2. Create an admin API key:
-   - `POST /v1/apikeys` with `scopes: ["read","write","admin"]`
-3. Create a vault:
-   - `POST /v1/vaults`
+From server host repo path:
 
-## Key Rotation
+```bash
+git pull --ff-only
+cp .env.example .env  # first run only
+docker compose up -d --build
+```
 
-1. Generate new vault key on trusted device.
-2. Encrypt vault key for every active device public key.
-3. Call `POST /v1/vaults/{vaultId}/keys/rotate` with incremented version.
-4. Monitor plugin telemetry for envelope apply success.
+## Baseline Verification
 
-## Backup and Restore
+```bash
+curl -sS http://localhost:8080/v1/admin/health
+curl -sS http://localhost:8080/metrics | head
+```
 
-Daily backup target:
+Expected:
 
-1. Postgres dump (encrypted at destination).
+1. Health status: `ok`
+2. Metrics endpoint returns Prometheus text output
+
+## First User Bootstrap (One-Time)
+
+If no users exist yet:
+
+```bash
+BOOTSTRAP_EMAIL=user@example.com BOOTSTRAP_PASSWORD='change-this-password' npm run -w @obsync/server bootstrap:user
+```
+
+Notes:
+
+1. Bootstrap fails if users already exist.
+2. Login endpoint no longer auto-creates users.
+
+## Access and Vault Setup
+
+```bash
+BASE_URL=http://localhost:8080
+JWT=$(curl -sS "$BASE_URL/v1/auth/login" \
+  -H 'content-type: application/json' \
+  -d '{"email":"user@example.com","password":"change-this-password"}' | jq -r '.token')
+
+VAULT_ID=$(curl -sS "$BASE_URL/v1/vaults" \
+  -H "authorization: Bearer $JWT" \
+  -H 'content-type: application/json' \
+  -d '{"name":"Personal Vault"}' | jq -r '.id')
+```
+
+## API Key Management
+
+Create scoped key:
+
+```bash
+curl -sS "$BASE_URL/v1/apikeys" \
+  -H "authorization: Bearer $JWT" \
+  -H 'content-type: application/json' \
+  -d '{"name":"openclaw-agent","scopes":["read","write"]}'
+```
+
+## Device Registration and Key Envelopes
+
+Plugin performs registration automatically at connect time using:
+
+1. `POST /v1/vaults/{vaultId}/devices/register`
+2. `GET /v1/vaults/{vaultId}/keys?deviceId=<uuid>`
+3. `POST /v1/vaults/{vaultId}/keys/rotate` (when needed)
+
+Operational check:
+
+1. Confirm `devices` table has recent `last_seen_at` values.
+2. Confirm `key_envelopes` rows exist for active devices.
+
+## Backups and Restore Drill
+
+Daily backup:
+
+1. Postgres logical dump (encrypted destination).
 2. MinIO bucket snapshot.
-3. Server config and environment metadata.
+3. `.env` and deployment metadata.
 
-Restore drill (weekly):
+Weekly restore drill:
 
-1. Restore DB and object store into isolated environment.
-2. Validate `GET /v1/admin/health` and one sync pull replay.
-3. Confirm vault status and blob commit consistency.
+1. Restore into isolated environment.
+2. Verify health, login, vault listing, and one sync pull replay.
+3. Verify blob chunk retrieval and commit integrity.
 
-## Incident Response
+## Incident Playbooks
 
-1. Symptom: push latency spike.
-   - Check DB health and op_log growth.
-   - Check network path and websocket reconnect churn.
-2. Symptom: missing blob commit.
-   - Inspect `missingChunks` in push responses.
-   - Retry chunk uploads for missing indices.
-3. Symptom: auth errors from agent.
-   - Validate API key scope and revocation status.
-   - Rotate key if leakage suspected.
+### Realtime reconnect storm
+
+1. Check websocket errors in server logs.
+2. Verify network, TLS/proxy config, and auth validity.
+3. Confirm clients still progress via polling fallback.
+
+### Auth failures
+
+1. Confirm user exists (bootstrap completed).
+2. Confirm key not revoked and scope is sufficient.
+3. Check rate-limit events (`AUTH_RATE_LIMITED`).
+
+### Blob failures
+
+1. Inspect `BLOB_INCOMPLETE` and `missingChunks` responses.
+2. Retry missing chunk upload and commit.
+
+## Release Gates
+
+Use [release checklist](./release-checklist.md) before production promotion.

@@ -1,4 +1,4 @@
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { BlobStore } from "./blobStore.js";
 
 export class S3BlobStore implements BlobStore {
@@ -35,5 +35,25 @@ export class S3BlobStore implements BlobStore {
       })
     );
     return key;
+  }
+
+  async readChunk(storageKey: string): Promise<Buffer> {
+    const response = await this.client.send(
+      new GetObjectCommand({
+        Bucket: this.options.bucket,
+        Key: storageKey
+      })
+    );
+
+    const body = response.Body;
+    if (!body) {
+      throw new Error(`Missing object body for ${storageKey}`);
+    }
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of body as AsyncIterable<Uint8Array>) {
+      chunks.push(Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
   }
 }

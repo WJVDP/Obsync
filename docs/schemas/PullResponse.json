@@ -29,9 +29,8 @@
             "description": "Vault identifier."
           },
           "fileId": {
-            "type": "string",
+            "type": ["string", "null"],
             "format": "uuid",
-            "nullable": true,
             "description": "File identifier if bound to a file entity."
           },
           "opType": {

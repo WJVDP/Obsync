@@ -1,52 +1,97 @@
 # OpenClaw Playbook
 
-This guide defines how OpenClaw/LLM agents should interact with Obsync safely and predictably.
+This guide defines safe, deterministic interaction patterns for OpenClaw and other LLM agents using Obsync APIs.
 
-## Auth Scope Matrix
+## Quickstart for Agents
+
+## 1) Obtain credentials
+
+Use one of:
+
+1. User JWT from `POST /v1/auth/login`
+2. Scoped API key from `POST /v1/apikeys`
+
+Recommended for agents: API key with least privilege.
+
+## 2) Scope matrix
 
 | Task | Required scope |
 |---|---|
-| Read vault list/status | `read` |
+| List vaults / status | `read` |
 | Pull sync operations | `read` |
 | Push sync operations | `write` |
-| Blob upload/commit | `write` |
-| Rotate key envelopes | `admin` |
+| Blob upload/download | `write` for upload, `read` for download |
+| Key envelope read | `read` |
+| Key rotate | `admin` |
 | Create API keys | `admin` |
 
-## Deterministic Error Codes
+## 3) Standard environment variables
 
-| Code | Meaning | Remediation |
-|---|---|---|
-| `UNAUTHORIZED` | Missing/invalid token | Refresh credentials and retry |
-| `FORBIDDEN` | Missing required scope | Use a key with required scope |
-| `VAULT_NOT_FOUND` | Vault is unknown or inaccessible | Verify `vaultId` and owner access |
-| `INVALID_PUSH_PAYLOAD` | Schema mismatch | Validate body against JSON Schema |
-| `CHUNK_HASH_MISMATCH` | Uploaded chunk hash mismatch | Recompute hash on encrypted bytes |
-| `BLOB_INCOMPLETE` | Missing chunk(s) before commit | Upload missing indices then commit |
-| `INVALID_ROTATE_KEYS_PAYLOAD` | Key-rotation payload invalid | Include `version` and non-empty envelopes |
-| `INTERNAL_ERROR` | Unexpected backend failure | Retry with exponential backoff, escalate with trace id |
+Use these names in scripts and recipes:
 
-## Operation Recipes
+- `BASE_URL`
+- `JWT`
+- `API_KEY`
+- `VAULT_ID`
+- `DEVICE_ID`
 
-Machine-readable recipes are provided at `docs/examples/operation-recipes.json`.
+## Canonical Workflows
 
-### Recipe: Pull Latest Changes
+## Workflow A: Pull latest with cursor
 
-1. Call `GET /v1/vaults/{vaultId}/sync/pull?since=<cursor>&deviceId=<uuid>`.
-2. Apply ops in ascending `seq`.
-3. Persist response `watermark` as new cursor.
+1. Call:
+   - `GET /v1/vaults/{vaultId}/sync/pull?since=<cursor>&deviceId=<DEVICE_ID>`
+2. Apply operations in ascending `seq`.
+3. Persist `watermark` as new cursor.
 
-### Recipe: Upload Attachment
+## Workflow B: Push markdown update safely
 
-1. Call `POST /blobs/init` with encrypted blob metadata.
-2. Upload all `missingIndices` via chunk endpoint.
-3. Commit via `/blobs/{blobHash}/commit`.
-4. Push `blob_ref` op referencing committed hash.
+1. Create unique `idempotencyKey`.
+2. Send one or more ops to `POST /v1/vaults/{vaultId}/sync/push`.
+3. Store `acknowledgedSeq` as cursor.
+4. Retry with same `idempotencyKey` on transient failure.
 
-## Agent Guardrails
+## Workflow C: Upload encrypted blob
 
-1. Never send plaintext note content unless explicitly operating without E2EE.
-2. Treat `idempotencyKey` as immutable once used.
-3. Retries must be jittered and bounded.
-4. Never infer missing chunk payloads; always re-read source bytes.
-5. For key rotation, require explicit human approval from calling workflow.
+1. `POST /v1/vaults/{vaultId}/blobs/init`
+2. Upload each missing index with:
+   - `PUT /v1/vaults/{vaultId}/blobs/{blobHash}/chunks/{index}`
+3. Commit:
+   - `POST /v1/vaults/{vaultId}/blobs/{blobHash}/commit`
+4. Push `blob_ref` op through sync push.
+
+## Workflow D: Key rotation (human approved)
+
+1. Require explicit human approval first.
+2. Build new versioned envelopes per authorized device.
+3. Call `POST /v1/vaults/{vaultId}/keys/rotate`.
+4. Verify devices can still decrypt and sync.
+
+## Failure Handling Contract
+
+| Code | Meaning | Retry Policy | Escalation |
+|---|---|---|---|
+| `UNAUTHORIZED` | Missing/invalid token | Do not blind-retry | Refresh creds; human if persistent |
+| `FORBIDDEN` | Scope insufficient | Do not retry | Request new scoped key |
+| `VAULT_NOT_FOUND` | Unknown/inaccessible vault | Do not retry | Verify `VAULT_ID` and ownership |
+| `INVALID_PUSH_PAYLOAD` | Schema mismatch | No retry until fixed | Validate against schema |
+| `AUTH_RATE_LIMITED` | Too many login attempts | Back off for window | Human review if repeated |
+| `CHUNK_HASH_MISMATCH` | Payload integrity mismatch | Retry after recompute | Escalate on repeated mismatch |
+| `BLOB_INCOMPLETE` | Missing chunk(s) before commit | Retry missing chunks only | Escalate if stuck |
+| `INTERNAL_ERROR` | Server-side failure | Exponential backoff + jitter | Escalate with trace/log context |
+
+## Security Guardrails
+
+1. Never store or log plaintext vault content unless explicitly running non-E2EE mode.
+2. Never place auth tokens in URL query parameters.
+3. Use `Authorization: Bearer ...` for HTTP calls.
+4. For realtime websocket auth, use `Sec-WebSocket-Protocol: obsync-auth, <token>`.
+5. Use least-privilege API keys for automation.
+6. Do not rotate keys without explicit human approval.
+
+## Contract References
+
+1. OpenAPI: [docs/api/openapi.yaml](../api/openapi.yaml)
+2. Schemas: [docs/schemas](../schemas)
+3. Operation recipes: [docs/examples/operation-recipes.json](../examples/operation-recipes.json)
+4. cURL examples: [docs/examples/curl.md](../examples/curl.md)

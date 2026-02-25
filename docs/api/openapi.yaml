@@ -5,24 +5,34 @@ info:
   description: |
     Self-hosted realtime sync API for Obsidian vaults.
     This contract is optimized for both human developers and LLM/OpenClaw automation clients.
+  license:
+    name: MIT
+    identifier: MIT
 servers:
-  - url: http://localhost:8080
+  - url: https://obsync.local
 security:
   - BearerAuth: []
 
 tags:
   - name: Auth
+    description: Login and API key management endpoints.
   - name: Vaults
+    description: Vault listing, creation, status, and device registration.
   - name: Sync
+    description: Push, pull, and realtime sync streams.
   - name: Blobs
+    description: Chunked encrypted blob upload and download.
   - name: Keys
+    description: Vault key envelope retrieval and rotation.
   - name: Admin
+    description: Administrative and observability endpoints.
 
 paths:
   /v1/auth/login:
     post:
       tags: [Auth]
-      summary: Authenticate or bootstrap a local account
+      operationId: login
+      summary: Authenticate an existing local account
       security: []
       requestBody:
         required: true
@@ -61,6 +71,7 @@ paths:
   /v1/apikeys:
     post:
       tags: [Auth]
+      operationId: createApiKey
       summary: Create a scoped API key for automation clients
       requestBody:
         required: true
@@ -107,6 +118,7 @@ paths:
   /v1/vaults:
     get:
       tags: [Vaults]
+      operationId: listVaults
       summary: List vaults for authenticated owner
       responses:
         '200':
@@ -126,6 +138,7 @@ paths:
           $ref: '#/components/responses/Error'
     post:
       tags: [Vaults]
+      operationId: createVault
       summary: Create vault
       requestBody:
         required: true
@@ -156,9 +169,47 @@ paths:
         '403':
           $ref: '#/components/responses/Error'
 
+  /v1/vaults/{vaultId}/devices/register:
+    post:
+      tags: [Vaults]
+      operationId: registerDevice
+      summary: Register or refresh a device public key for envelope operations
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, deviceName, publicKey]
+              properties:
+                deviceId: { type: string, format: uuid }
+                deviceName: { type: string }
+                publicKey: { type: string }
+      responses:
+        '201':
+          description: Device registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, deviceName, registered]
+                properties:
+                  id: { type: string, format: uuid }
+                  deviceName: { type: string }
+                  registered: { type: boolean }
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
   /v1/vaults/{vaultId}/sync/push:
     post:
       tags: [Sync]
+      operationId: pushSyncBatch
       summary: Push a batch of sync operations
       parameters:
         - $ref: '#/components/parameters/VaultId'
@@ -213,6 +264,7 @@ paths:
   /v1/vaults/{vaultId}/sync/pull:
     get:
       tags: [Sync]
+      operationId: pullSyncBatch
       summary: Pull operations newer than a cursor
       parameters:
         - $ref: '#/components/parameters/VaultId'
@@ -239,6 +291,7 @@ paths:
   /v1/vaults/{vaultId}/blobs/init:
     post:
       tags: [Blobs]
+      operationId: initBlobUpload
       summary: Initialize or resume blob upload
       parameters:
         - $ref: '#/components/parameters/VaultId'
@@ -281,6 +334,7 @@ paths:
   /v1/vaults/{vaultId}/blobs/{blobHash}/chunks/{index}:
     put:
       tags: [Blobs]
+      operationId: uploadBlobChunk
       summary: Upload one encrypted chunk
       parameters:
         - $ref: '#/components/parameters/VaultId'
@@ -328,10 +382,32 @@ paths:
                   persisted: { type: boolean }
         '409':
           $ref: '#/components/responses/Error'
+    get:
+      tags: [Blobs]
+      operationId: downloadBlobChunk
+      summary: Download one encrypted blob chunk
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+        - name: blobHash
+          in: path
+          required: true
+          schema: { type: string }
+        - name: index
+          in: path
+          required: true
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Encrypted chunk payload
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
 
   /v1/vaults/{vaultId}/blobs/{blobHash}/commit:
     post:
       tags: [Blobs]
+      operationId: commitBlobUpload
       summary: Commit blob once all chunks are uploaded
       parameters:
         - $ref: '#/components/parameters/VaultId'
@@ -370,9 +446,29 @@ paths:
         '409':
           $ref: '#/components/responses/Error'
 
+  /v1/vaults/{vaultId}/blobs/{blobHash}:
+    get:
+      tags: [Blobs]
+      operationId: getBlobManifest
+      summary: Get encrypted blob manifest and chunk index list
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+        - name: blobHash
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Blob manifest
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
   /v1/vaults/{vaultId}/status:
     get:
       tags: [Vaults]
+      operationId: getVaultStatus
       summary: Get vault sync status snapshot
       parameters:
         - $ref: '#/components/parameters/VaultId'
@@ -386,9 +482,29 @@ paths:
         '404':
           $ref: '#/components/responses/Error'
 
+  /v1/vaults/{vaultId}/keys:
+    get:
+      tags: [Keys]
+      operationId: getVaultKeyEnvelopes
+      summary: Retrieve key envelopes for a vault and optional device
+      parameters:
+        - $ref: '#/components/parameters/VaultId'
+        - name: deviceId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Envelope list
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
   /v1/vaults/{vaultId}/keys/rotate:
     post:
       tags: [Keys]
+      operationId: rotateVaultKeys
       summary: Rotate encrypted vault key envelopes
       parameters:
         - $ref: '#/components/parameters/VaultId'
@@ -445,6 +561,7 @@ paths:
   /v1/admin/health:
     get:
       tags: [Admin]
+      operationId: getHealth
       summary: System health
       security: []
       responses:
@@ -463,26 +580,31 @@ paths:
                   serverTime:
                     type: string
                     format: date-time
+        '429':
+          $ref: '#/components/responses/Error'
 
   /v1/vaults/{vaultId}/realtime:
     get:
       tags: [Sync]
+      operationId: openRealtime
       summary: Open websocket stream for realtime operation fanout
       description: |
-        Upgrade to WebSocket. Authenticate with `token` query parameter in self-host plugin mode.
+        Upgrade to WebSocket. Authenticate with `Sec-WebSocket-Protocol: obsync-auth, <token>`.
       parameters:
         - $ref: '#/components/parameters/VaultId'
         - name: since
           in: query
           required: false
           schema: { type: integer, minimum: 0, default: 0 }
-        - name: token
-          in: query
-          required: true
-          schema: { type: string }
       responses:
+        '200':
+          description: Non-websocket clients receive a standard HTTP response in tooling contexts.
         '101':
           description: Switching protocols (websocket)
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
 
 components:
   securitySchemes:

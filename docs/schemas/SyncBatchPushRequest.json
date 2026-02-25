@@ -1,6 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://obsync.local/schemas/SyncBatchPushRequest.json",
   "title": "SyncBatchPushRequest",
   "description": "Pushes a batch of operations from one device for a specific vault.",
   "type": "object",
