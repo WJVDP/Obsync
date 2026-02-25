@@ -4,14 +4,23 @@ Self-hosted realtime sync for Obsidian vaults, with CRDT markdown merging, encry
 
 ## One-Line Install
 
+Server stack (works with private or public repo access):
+
 ```bash
-npm run install:one-line
+git clone https://github.com/WJVDP/Obsync.git && cd Obsync && sh scripts/install-server.sh
 ```
 
-Optional (also installs plugin into a local vault path):
+Plugin-only install (local machine with Obsidian vault path):
 
 ```bash
-npm run install:one-line -- "/absolute/path/to/your/vault"
+git clone https://github.com/WJVDP/Obsync.git && cd Obsync && sh scripts/install-plugin.sh "/absolute/path/to/your/vault"
+```
+
+If/when this repo is public, you can also use curl-only installers:
+
+```bash
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/WJVDP/Obsync/main/scripts/install-server.sh)"
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/WJVDP/Obsync/main/scripts/install-plugin.sh)" -- "/absolute/path/to/your/vault"
 ```
 
 ## What Obsync Is
