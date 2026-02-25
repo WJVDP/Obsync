@@ -55,14 +55,15 @@ cd Obsync
 cp .env.example .env
 ```
 
-### 2) Set a strong JWT secret for Docker server
+### 2) Set a strong JWT secret
 
-`docker-compose.yml` runs the server with `NODE_ENV=production`. In production mode, `JWT_SECRET=change-me` is rejected by startup validation.
-
-Set `server.environment.JWT_SECRET` in `docker-compose.yml` to a strong value (32+ chars), for example:
+The server runs with `NODE_ENV=production` and rejects `JWT_SECRET=change-me` at startup. Set a real value in `.env`:
 
 ```bash
+# generate a strong secret
 openssl rand -hex 32
+# then set it in .env
+JWT_SECRET=<output from above>
 ```
 
 ### 3) Start the stack

@@ -60,7 +60,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 8080
-      JWT_SECRET: change-me
+      JWT_SECRET: ${JWT_SECRET}
       DATABASE_URL: postgres://obsync:obsync@postgres:5432/obsync
       DATA_DIR: /app/data
       BLOB_STORE_MODE: minio

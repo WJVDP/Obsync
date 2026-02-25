@@ -8,3 +8,5 @@ coverage
 *.tsbuildinfo
 .obsync-data
 apps/server/data
+# Build copies manifest.json here automatically; source of truth is apps/plugin/manifest.json
+apps/plugin/dist-obsidian/manifest.json

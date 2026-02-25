@@ -9,7 +9,7 @@ info:
     name: MIT
     identifier: MIT
 servers:
-  - url: https://your-obsync-host.tld
+  - url: http://localhost:8080
 security:
   - BearerAuth: []
 
