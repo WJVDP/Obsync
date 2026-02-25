@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://obsync.local/schemas/BlobCommitRequest.json",
+  "$id": "https://raw.githubusercontent.com/WJVDP/Obsync/main/docs/schemas/BlobCommitRequest.json",
   "title": "BlobCommitRequest",
   "description": "Finalizes a blob after all chunks are uploaded.",
   "type": "object",

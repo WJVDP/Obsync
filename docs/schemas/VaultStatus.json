@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://obsync.local/schemas/VaultStatus.json",
+  "$id": "https://raw.githubusercontent.com/WJVDP/Obsync/main/docs/schemas/VaultStatus.json",
   "title": "VaultStatus",
   "description": "Realtime status snapshot for one vault.",
   "type": "object",

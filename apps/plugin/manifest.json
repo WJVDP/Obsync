@@ -5,6 +5,6 @@
   "minAppVersion": "1.5.0",
   "description": "Self-hosted realtime sync for Obsidian using Obsync.",
   "author": "Obsync",
-  "authorUrl": "https://obsync.local",
+  "authorUrl": "https://github.com/WJVDP/Obsync",
   "isDesktopOnly": false
 }

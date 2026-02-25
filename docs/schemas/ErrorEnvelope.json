@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://obsync.local/schemas/ErrorEnvelope.json",
+  "$id": "https://raw.githubusercontent.com/WJVDP/Obsync/main/docs/schemas/ErrorEnvelope.json",
   "title": "ErrorEnvelope",
   "description": "Deterministic machine-readable error envelope returned by all endpoints.",
   "type": "object",
