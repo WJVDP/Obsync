@@ -577,20 +577,18 @@ server.get(
     websocket: true,
     preValidation: server.authenticate
   },
-  async (connection, request) => {
+  async (socket, request) => {
     const authContext = request.authContext;
     if (!authContext || !requireScope("read", authContext.scopes)) {
-      connection.socket.send(
-        JSON.stringify({ code: "FORBIDDEN", message: "read scope required" })
-      );
-      connection.socket.close();
+      socket.send(JSON.stringify({ code: "FORBIDDEN", message: "read scope required" }));
+      socket.close();
       return;
     }
 
     const { vaultId } = request.params as { vaultId: string };
     if (!(await assertVaultAccess(vaultId, authContext.userId))) {
-      connection.socket.send(JSON.stringify({ code: "VAULT_NOT_FOUND", message: "Vault not found" }));
-      connection.socket.close();
+      socket.send(JSON.stringify({ code: "VAULT_NOT_FOUND", message: "Vault not found" }));
+      socket.close();
       return;
     }
 
@@ -612,7 +610,7 @@ server.get(
       [vaultId, since]
     );
 
-    connection.socket.send(
+    socket.send(
       JSON.stringify({
         type: "backlog",
         events: backlog.map((row) => ({
@@ -625,16 +623,18 @@ server.get(
     );
 
     const unsubscribe = realtimeBus.subscribe(vaultId, (event) => {
-      connection.socket.send(JSON.stringify({ type: "event", ...event }));
+      if (socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: "event", ...event }));
+      }
     });
 
     const keepalive = setInterval(() => {
-      if (connection.socket.readyState === 1) {
-        connection.socket.send(JSON.stringify({ type: "keepalive", ts: new Date().toISOString() }));
+      if (socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: "keepalive", ts: new Date().toISOString() }));
       }
     }, 20_000);
 
-    connection.socket.on("close", () => {
+    socket.on("close", () => {
       clearInterval(keepalive);
       unsubscribe();
     });
