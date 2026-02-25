@@ -10,6 +10,7 @@
   "scripts": {
     "build": "npm run -w @obsync/shared build && npm run -w @obsync/server build && npm run -w @obsync/plugin build",
     "dev": "npm run -w @obsync/server dev",
+    "install:one-line": "bash ./scripts/install.sh",
     "test": "npm run -w @obsync/shared test && npm run -w @obsync/server test && npm run -w @obsync/plugin test",
     "lint": "npm run -w @obsync/shared lint && npm run -w @obsync/server lint && npm run -w @obsync/plugin lint",
     "typecheck": "npm run -w @obsync/shared build && npm run -w @obsync/shared typecheck && npm run -w @obsync/server typecheck && npm run -w @obsync/plugin typecheck",
