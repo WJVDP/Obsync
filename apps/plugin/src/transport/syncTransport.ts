@@ -5,6 +5,13 @@ export interface SyncTransportOptions {
   token: string;
 }
 
+export interface RealtimeHandlers {
+  onMessage: (payload: unknown) => void;
+  onOpen?: () => void;
+  onClose?: () => void;
+  onError?: (error: Event) => void;
+}
+
 export class SyncTransport {
   constructor(private readonly options: SyncTransportOptions) {}
 
@@ -41,8 +48,7 @@ export class SyncTransport {
   openRealtime(
     vaultId: string,
     since: number,
-    onMessage: (payload: unknown) => void,
-    onError?: (error: Event) => void
+    handlers: RealtimeHandlers
   ): WebSocket {
     const endpoint = this.options.baseUrl.replace(/^http/, "ws");
     const params = new URLSearchParams({
@@ -53,15 +59,15 @@ export class SyncTransport {
 
     socket.addEventListener("message", (event) => {
       try {
-        onMessage(JSON.parse(String(event.data)));
+        handlers.onMessage(JSON.parse(String(event.data)));
       } catch {
-        onMessage(event.data);
+        handlers.onMessage(event.data);
       }
     });
 
-    if (onError) {
-      socket.addEventListener("error", onError);
-    }
+    socket.addEventListener("open", () => handlers.onOpen?.());
+    socket.addEventListener("close", () => handlers.onClose?.());
+    socket.addEventListener("error", (event) => handlers.onError?.(event));
 
     return socket;
   }

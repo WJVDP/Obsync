@@ -1,4 +1,13 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile } from "obsidian";
+import {
+  App,
+  Notice,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+  TAbstractFile,
+  TFile,
+  normalizePath
+} from "obsidian";
 import { v4 as uuidv4 } from "uuid";
 import { VaultEventCapture, type VaultEvent } from "./event-capture/vaultEventCapture.js";
 import { YjsMarkdownEngine } from "./crdt-engine/yjsEngine.js";
@@ -24,6 +33,15 @@ interface ObsyncPluginData {
   syncState?: SyncStateSnapshot;
 }
 
+type ConnectionStatus =
+  | "disconnected"
+  | "connecting"
+  | "connected_live"
+  | "connected_polling"
+  | "reconnecting"
+  | "syncing"
+  | "error";
+
 const DEFAULT_SETTINGS: ObsyncPluginSettings = {
   baseUrl: "http://localhost:8080",
   email: "",
@@ -35,6 +53,9 @@ const DEFAULT_SETTINGS: ObsyncPluginSettings = {
   autoConnectOnLoad: false,
   realtimeEnabled: true
 };
+
+const PERIODIC_PULL_INTERVAL_MS = 30_000;
+const MAX_RECONNECT_DELAY_MS = 30_000;
 
 class ObsidianPluginDataPersistence implements SyncStatePersistence {
   constructor(private readonly plugin: ObsyncPlugin) {}
@@ -59,6 +80,14 @@ export default class ObsyncPlugin extends Plugin {
   private syncEngine: SyncEngine | null = null;
   private readonly suppressedPaths = new Map<string, number>();
 
+  private statusBarEl: HTMLElement | null = null;
+  private currentStatus: ConnectionStatus = "disconnected";
+
+  private periodicPullTimer: number | null = null;
+  private reconnectTimer: number | null = null;
+  private reconnectAttempt = 0;
+  private shouldReconnectRealtime = false;
+
   async onload(): Promise<void> {
     await this.loadSettings();
 
@@ -66,6 +95,9 @@ export default class ObsyncPlugin extends Plugin {
       this.settings.deviceId = uuidv4();
       await this.saveSettings();
     }
+
+    this.statusBarEl = this.addStatusBarItem();
+    this.setConnectionStatus("disconnected");
 
     this.captureUnsubscribe = this.eventCapture.onEvent((event) => {
       void this.onCapturedEvent(event);
@@ -90,6 +122,14 @@ export default class ObsyncPlugin extends Plugin {
       }
     });
 
+    this.addCommand({
+      id: "obsync-disconnect",
+      name: "Obsync: Disconnect",
+      callback: () => {
+        this.disconnect();
+      }
+    });
+
     if (this.settings.autoConnectOnLoad) {
       void this.connectAndStart();
     }
@@ -98,7 +138,7 @@ export default class ObsyncPlugin extends Plugin {
   onunload(): void {
     this.captureUnsubscribe?.();
     this.captureUnsubscribe = null;
-    this.syncEngine?.stopRealtime();
+    this.disconnect();
   }
 
   async connectAndStart(): Promise<void> {
@@ -106,6 +146,9 @@ export default class ObsyncPlugin extends Plugin {
       new Notice("Obsync: Set Vault ID in settings first");
       return;
     }
+
+    this.disconnect();
+    this.setConnectionStatus("connecting");
 
     try {
       const token = await this.resolveToken();
@@ -122,6 +165,21 @@ export default class ObsyncPlugin extends Plugin {
           deviceId: this.settings.deviceId,
           onRemoteMarkdown: async (path, content) => {
             await this.applyRemoteMarkdown(path, content);
+          },
+          onRealtimeOpen: () => {
+            this.reconnectAttempt = 0;
+            this.clearReconnectTimer();
+            this.setConnectionStatus("connected_live");
+          },
+          onRealtimeClose: () => {
+            if (this.shouldReconnectRealtime) {
+              this.scheduleRealtimeReconnect("socket closed");
+            }
+          },
+          onRealtimeError: () => {
+            if (this.shouldReconnectRealtime) {
+              this.scheduleRealtimeReconnect("socket error");
+            }
           }
         },
         transport,
@@ -131,14 +189,21 @@ export default class ObsyncPlugin extends Plugin {
       );
 
       await this.syncEngine.initialize();
+      await this.syncEngine.flushOutbox();
       await this.syncEngine.pullOnce();
 
+      this.startPeriodicPullLoop();
+
       if (this.settings.realtimeEnabled) {
-        this.syncEngine.startRealtime();
+        this.shouldReconnectRealtime = true;
+        this.startRealtime();
+      } else {
+        this.setConnectionStatus("connected_polling");
       }
 
       new Notice("Obsync connected");
     } catch (error) {
+      this.setConnectionStatus("error", String(error));
       new Notice(`Obsync connect failed: ${String(error)}`);
     }
   }
@@ -152,28 +217,52 @@ export default class ObsyncPlugin extends Plugin {
       return;
     }
 
+    this.setConnectionStatus("syncing");
     try {
       await this.syncEngine.flushOutbox();
       await this.syncEngine.pullOnce();
+      this.refreshSteadyStateStatus();
       new Notice("Obsync sync complete");
     } catch (error) {
+      this.setConnectionStatus("error", String(error));
       new Notice(`Obsync sync failed: ${String(error)}`);
     }
   }
 
+  disconnect(): void {
+    this.shouldReconnectRealtime = false;
+    this.clearReconnectTimer();
+    this.clearPeriodicPullLoop();
+    this.syncEngine?.stopRealtime();
+    this.syncEngine = null;
+    this.reconnectAttempt = 0;
+    this.setConnectionStatus("disconnected");
+  }
+
   async loadSettings(): Promise<void> {
+    const fileSettings = await this.readSettingsFile();
+    if (fileSettings) {
+      this.settings = {
+        ...DEFAULT_SETTINGS,
+        ...fileSettings
+      };
+      return;
+    }
+
+    // Backward compatibility with previous settings storage in data.json.
     const loaded = await this.readPluginData();
     const rootSettings = loaded.settings ?? loaded;
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...(rootSettings as Partial<ObsyncPluginSettings>)
     };
+
+    // Migrate to dedicated settings file once loaded.
+    await this.saveSettings();
   }
 
   async saveSettings(): Promise<void> {
-    const data = await this.readPluginData();
-    data.settings = this.settings;
-    await this.writePluginData(data);
+    await this.writeSettingsFile(this.settings);
   }
 
   private async onCapturedEvent(event: VaultEvent): Promise<void> {
@@ -188,6 +277,7 @@ export default class ObsyncPlugin extends Plugin {
     try {
       await this.syncEngine.handleVaultEvent(event);
     } catch (error) {
+      this.setConnectionStatus("error", String(error));
       new Notice(`Obsync event sync failed: ${String(error)}`);
     }
   }
@@ -338,6 +428,151 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
+  private startRealtime(): void {
+    if (!this.syncEngine) {
+      return;
+    }
+
+    const label = this.reconnectAttempt > 0 ? "reconnecting" : "connecting";
+    this.setConnectionStatus(label, this.reconnectAttempt > 0 ? `attempt ${this.reconnectAttempt}` : undefined);
+    this.syncEngine.startRealtime();
+  }
+
+  private scheduleRealtimeReconnect(reason: string): void {
+    if (!this.syncEngine || !this.shouldReconnectRealtime) {
+      return;
+    }
+
+    if (this.reconnectTimer) {
+      return;
+    }
+
+    const exponential = Math.min(MAX_RECONNECT_DELAY_MS, 1000 * 2 ** this.reconnectAttempt);
+    const jitter = Math.floor(Math.random() * 300);
+    const delayMs = exponential + jitter;
+
+    this.reconnectAttempt += 1;
+    this.setConnectionStatus("reconnecting", `${Math.ceil(delayMs / 1000)}s (${reason})`);
+
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.syncEngine || !this.shouldReconnectRealtime) {
+        return;
+      }
+      this.startRealtime();
+    }, delayMs);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private startPeriodicPullLoop(): void {
+    this.clearPeriodicPullLoop();
+    this.periodicPullTimer = window.setInterval(() => {
+      void this.periodicPullTick();
+    }, PERIODIC_PULL_INTERVAL_MS);
+  }
+
+  private clearPeriodicPullLoop(): void {
+    if (this.periodicPullTimer) {
+      window.clearInterval(this.periodicPullTimer);
+      this.periodicPullTimer = null;
+    }
+  }
+
+  private async periodicPullTick(): Promise<void> {
+    if (!this.syncEngine) {
+      return;
+    }
+
+    try {
+      await this.syncEngine.flushOutbox();
+      await this.syncEngine.pullOnce();
+
+      if (!this.syncEngine.isRealtimeConnected()) {
+        this.setConnectionStatus("connected_polling", "fallback pull");
+      }
+    } catch (error) {
+      this.setConnectionStatus("error", `poll failed: ${String(error)}`);
+    }
+  }
+
+  private refreshSteadyStateStatus(): void {
+    if (!this.syncEngine) {
+      this.setConnectionStatus("disconnected");
+      return;
+    }
+
+    if (this.settings.realtimeEnabled && this.syncEngine.isRealtimeConnected()) {
+      this.setConnectionStatus("connected_live");
+      return;
+    }
+
+    this.setConnectionStatus("connected_polling");
+  }
+
+  private setConnectionStatus(status: ConnectionStatus, detail?: string): void {
+    this.currentStatus = status;
+
+    if (!this.statusBarEl) {
+      return;
+    }
+
+    const label =
+      status === "disconnected"
+        ? "Disconnected"
+        : status === "connecting"
+          ? "Connecting"
+          : status === "connected_live"
+            ? "Live"
+            : status === "connected_polling"
+              ? "Polling"
+              : status === "reconnecting"
+                ? "Reconnecting"
+                : status === "syncing"
+                  ? "Syncing"
+                  : "Error";
+
+    this.statusBarEl.setText(`Obsync: ${label}${detail ? ` (${detail})` : ""}`);
+  }
+
+  private getSettingsPath(): string {
+    return normalizePath(`${this.app.vault.configDir}/plugins/${this.manifest.id}/settings.json`);
+  }
+
+  private getSettingsDirPath(): string {
+    return normalizePath(`${this.app.vault.configDir}/plugins/${this.manifest.id}`);
+  }
+
+  private async readSettingsFile(): Promise<Partial<ObsyncPluginSettings> | null> {
+    const path = this.getSettingsPath();
+    try {
+      const exists = await this.app.vault.adapter.exists(path);
+      if (!exists) {
+        return null;
+      }
+
+      const raw = await this.app.vault.adapter.read(path);
+      return JSON.parse(raw) as Partial<ObsyncPluginSettings>;
+    } catch {
+      return null;
+    }
+  }
+
+  private async writeSettingsFile(settings: ObsyncPluginSettings): Promise<void> {
+    const dir = this.getSettingsDirPath();
+    const path = this.getSettingsPath();
+    const dirExists = await this.app.vault.adapter.exists(dir);
+    if (!dirExists) {
+      await this.app.vault.adapter.mkdir(dir);
+    }
+    await this.app.vault.adapter.write(path, JSON.stringify(settings, null, 2));
+  }
+
   async readPluginData(): Promise<ObsyncPluginData> {
     return ((await this.loadData()) ?? {}) as ObsyncPluginData;
   }
@@ -428,6 +663,9 @@ class ObsyncSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.realtimeEnabled).onChange(async (value) => {
           this.plugin.settings.realtimeEnabled = value;
           await this.plugin.saveSettings();
+          if (value) {
+            await this.plugin.connectAndStart();
+          }
         })
       );
 
