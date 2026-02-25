@@ -8744,12 +8744,7 @@ var SyncEngine = class {
     const since = this.stateStore.getCursor(this.options.vaultId);
     const response = await this.transport.pull(this.options.vaultId, since, this.options.deviceId);
     for (const op of response.ops) {
-      if (op.opType === "md_update") {
-        const yUpdate = String(op.payload["yUpdateBase64"] ?? "");
-        if (yUpdate && op.payload["path"]) {
-          this.crdtEngine.mergeRemoteUpdate(String(op.payload["path"]), yUpdate);
-        }
-      }
+      await this.applyRemoteOp(op.opType, op.payload);
     }
     await this.stateStore.setCursor(this.options.vaultId, response.watermark);
   }
@@ -8764,13 +8759,7 @@ var SyncEngine = class {
       async (payload) => {
         if (isRealtimeEvent(payload)) {
           const typedPayload = payload;
-          if (typedPayload.opType === "md_update") {
-            const path = String(typedPayload.payload.path ?? "");
-            const update = String(typedPayload.payload.yUpdateBase64 ?? "");
-            if (path && update) {
-              this.crdtEngine.mergeRemoteUpdate(path, update);
-            }
-          }
+          await this.applyRemoteOp(typedPayload.opType, typedPayload.payload);
           await this.stateStore.setCursor(this.options.vaultId, typedPayload.seq);
         }
       },
@@ -8791,6 +8780,18 @@ var SyncEngine = class {
     const jitterMs = Math.floor(Math.random() * 100);
     const waitMs = baseMs + jitterMs;
     await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+  async applyRemoteOp(opType, payload) {
+    if (opType !== "md_update") {
+      return;
+    }
+    const path = String(payload.path ?? "");
+    const update = String(payload.yUpdateBase64 ?? "");
+    if (!path || !update) {
+      return;
+    }
+    const content = this.crdtEngine.mergeRemoteUpdate(path, update);
+    await this.options.onRemoteMarkdown?.(path, content);
   }
 };
 function isRealtimeEvent(payload) {
@@ -8857,6 +8858,7 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
     __publicField(this, "eventCapture", new VaultEventCapture());
     __publicField(this, "captureUnsubscribe", null);
     __publicField(this, "syncEngine", null);
+    __publicField(this, "suppressedPaths", /* @__PURE__ */ new Map());
   }
   async onload() {
     await this.loadSettings();
@@ -8908,7 +8910,10 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
       this.syncEngine = new SyncEngine(
         {
           vaultId: this.settings.vaultId,
-          deviceId: this.settings.deviceId
+          deviceId: this.settings.deviceId,
+          onRemoteMarkdown: async (path, content) => {
+            await this.applyRemoteMarkdown(path, content);
+          }
         },
         transport,
         stateStore,
@@ -8955,6 +8960,9 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
   }
   async onCapturedEvent(event) {
     if (!this.syncEngine) {
+      return;
+    }
+    if (this.shouldSuppressLocalEvent(event.path)) {
       return;
     }
     try {
@@ -9046,6 +9054,44 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
       return await this.app.vault.cachedRead(file);
     } catch {
       return void 0;
+    }
+  }
+  shouldSuppressLocalEvent(path) {
+    const expiresAt = this.suppressedPaths.get(path);
+    if (!expiresAt) {
+      return false;
+    }
+    if (Date.now() > expiresAt) {
+      this.suppressedPaths.delete(path);
+      return false;
+    }
+    return true;
+  }
+  markPathSuppressed(path) {
+    this.suppressedPaths.set(path, Date.now() + 4e3);
+  }
+  async applyRemoteMarkdown(path, content) {
+    this.markPathSuppressed(path);
+    await this.ensureFolderForPath(path);
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof import_obsidian.TFile) {
+      await this.app.vault.modify(existing, content);
+      return;
+    }
+    await this.app.vault.create(path, content);
+  }
+  async ensureFolderForPath(path) {
+    const segments = path.split("/").slice(0, -1).filter(Boolean);
+    if (segments.length === 0) {
+      return;
+    }
+    let current = "";
+    for (const segment of segments) {
+      current = current ? `${current}/${segment}` : segment;
+      const existing = this.app.vault.getAbstractFileByPath(current);
+      if (!existing) {
+        await this.app.vault.createFolder(current);
+      }
     }
   }
   async readPluginData() {
