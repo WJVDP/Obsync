@@ -66,6 +66,18 @@ curl -sS "$BASE_URL/v1/apikeys" \
   -d '{"name":"openclaw-agent","scopes":["read","write"]}'
 ```
 
+Headless bootstrap installer (writes `HEADLESS_*` values to `.env`):
+
+```bash
+sh scripts/install-headless.sh
+```
+
+Notes:
+
+1. Installer logs in with provided credentials, creates a vault when needed, and creates a `read,write` API key.
+2. On reruns, if `HEADLESS_API_TOKEN` already exists, installer prompts whether to keep it or rotate it.
+3. Installer prints only a masked token preview after save.
+
 ## Device Registration and Key Envelopes
 
 Plugin performs registration automatically at connect time using:

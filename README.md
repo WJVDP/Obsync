@@ -48,6 +48,7 @@ The installer is interactive and will guide you through:
 1. Starting the server stack with Docker Compose
 2. Bootstrapping first user + creating initial vault
 3. Optionally installing the Obsidian plugin into a local vault path
+4. Optionally configuring headless vault sync credentials in `.env`
 
 ## Quick Start (Repo Checkout)
 
@@ -124,6 +125,28 @@ In Obsidian:
    - Auth: `API Token` or `Email + Password`
    - `Realtime`: enabled
 4. Click `Connect`.
+
+### 9) Optional: configure headless vault sync bootstrap
+
+Run the standalone headless installer:
+
+```bash
+sh scripts/install-headless.sh
+```
+
+The installer will:
+
+1. Prompt for `Base URL`, account email/password, optional `Vault ID`, and mirror path.
+2. Log in (`POST /v1/auth/login`) and create a vault if no vault id is supplied.
+3. Create a scoped API key (`read`,`write`) or prompt to keep/rotate existing `HEADLESS_API_TOKEN`.
+4. Persist these keys in `.env` without reordering unrelated entries:
+   - `HEADLESS_BASE_URL`
+   - `HEADLESS_VAULT_ID`
+   - `HEADLESS_API_TOKEN`
+   - `HEADLESS_MIRROR_PATH`
+
+For security, the installer prints only a masked API token preview after saving.
+If a `headless-sync` Docker Compose service exists, the installer also offers to start it.
 
 ## Agent/API Quick Flow
 

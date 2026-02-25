@@ -50,6 +50,126 @@ ask_yes_no() {
   done
 }
 
+render_component_option() {
+  idx="$1"
+  selected="$2"
+  label="$3"
+  cursor="$4"
+  marker=" "
+  box="[ ]"
+  if [ "$cursor" -eq "$idx" ]; then
+    marker=">"
+  fi
+  if [ "$selected" -eq 1 ]; then
+    box="[x]"
+  fi
+  printf "%s %s %s\n" "$marker" "$box" "$label"
+}
+
+read_keypress() {
+  previous_stty="$(stty -g)"
+  stty -echo -icanon min 1 time 0
+  key="$(dd bs=1 count=1 2>/dev/null || true)"
+  stty "$previous_stty"
+
+  if [ "$key" = "$(printf '\033')" ]; then
+    previous_stty="$(stty -g)"
+    stty -echo -icanon min 1 time 0
+    key2="$(dd bs=1 count=1 2>/dev/null || true)"
+    key3="$(dd bs=1 count=1 2>/dev/null || true)"
+    stty "$previous_stty"
+    if [ "$key2" = "[" ]; then
+      case "$key3" in
+        A) printf "up" ; return 0 ;;
+        B) printf "down" ; return 0 ;;
+      esac
+    fi
+    printf "other"
+    return 0
+  fi
+
+  if [ "$key" = " " ]; then
+    printf "space"
+    return 0
+  fi
+  if [ "$key" = "$(printf '\r')" ] || [ "$key" = "$(printf '\n')" ]; then
+    printf "enter"
+    return 0
+  fi
+  printf "other"
+}
+
+choose_install_components() {
+  selected_server=1
+  selected_plugin=0
+  selected_headless=0
+  cursor=1
+
+  while true; do
+    printf '\033[2J\033[H'
+    echo "Select components to install"
+    echo "Use arrow keys to move, Space to toggle, Enter to confirm."
+    echo
+    render_component_option 1 "$selected_server" "Server stack (docker compose + optional bootstrap)" "$cursor"
+    render_component_option 2 "$selected_plugin" "Obsidian plugin install on this machine" "$cursor"
+    render_component_option 3 "$selected_headless" "Headless vault sync bootstrap" "$cursor"
+    echo
+
+    key="$(read_keypress)"
+    case "$key" in
+      up)
+        cursor=$((cursor - 1))
+        if [ "$cursor" -lt 1 ]; then
+          cursor=3
+        fi
+        ;;
+      down)
+        cursor=$((cursor + 1))
+        if [ "$cursor" -gt 3 ]; then
+          cursor=1
+        fi
+        ;;
+      space)
+        case "$cursor" in
+          1)
+            if [ "$selected_server" -eq 1 ]; then
+              selected_server=0
+            else
+              selected_server=1
+            fi
+            ;;
+          2)
+            if [ "$selected_plugin" -eq 1 ]; then
+              selected_plugin=0
+            else
+              selected_plugin=1
+            fi
+            ;;
+          3)
+            if [ "$selected_headless" -eq 1 ]; then
+              selected_headless=0
+            else
+              selected_headless=1
+            fi
+            ;;
+        esac
+        ;;
+      enter)
+        if [ "$selected_server" -eq 0 ] && [ "$selected_plugin" -eq 0 ] && [ "$selected_headless" -eq 0 ]; then
+          echo "Select at least one component."
+          sleep 1
+          continue
+        fi
+        INSTALL_SERVER="$selected_server"
+        INSTALL_PLUGIN="$selected_plugin"
+        INSTALL_HEADLESS="$selected_headless"
+        printf '\033[2J\033[H'
+        return 0
+        ;;
+    esac
+  done
+}
+
 json_escape() {
   printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -101,8 +221,27 @@ BASE_URL="http://localhost:8080"
 VAULT_ID=""
 BOOTSTRAP_EMAIL=""
 BOOTSTRAP_PASSWORD=""
+INSTALL_SERVER=1
+INSTALL_PLUGIN=0
+INSTALL_HEADLESS=0
 
-if ask_yes_no "Set up server stack now?" "Y"; then
+if [ -t 0 ] && [ -t 1 ]; then
+  choose_install_components
+else
+  if ask_yes_no "Set up server stack now?" "Y"; then
+    INSTALL_SERVER=1
+  else
+    INSTALL_SERVER=0
+  fi
+  if ask_yes_no "Install Obsync plugin into a local Obsidian vault on this machine?" "N"; then
+    INSTALL_PLUGIN=1
+  fi
+  if ask_yes_no "Set up headless vault sync for a server mirror?" "N"; then
+    INSTALL_HEADLESS=1
+  fi
+fi
+
+if [ "$INSTALL_SERVER" -eq 1 ]; then
   require_cmd docker
   require_cmd curl
 
@@ -156,13 +295,17 @@ if ask_yes_no "Set up server stack now?" "Y"; then
   fi
 fi
 
-if ask_yes_no "Install Obsync plugin into a local Obsidian vault on this machine?" "N"; then
+if [ "$INSTALL_PLUGIN" -eq 1 ]; then
   VAULT_PATH="$(ask_input "Absolute vault path" "")"
   if [ -z "$VAULT_PATH" ]; then
     echo "Vault path is required for plugin install." >&2
     exit 1
   fi
   sh "$REPO_ROOT/scripts/install-plugin.sh" "$VAULT_PATH"
+fi
+
+if [ "$INSTALL_HEADLESS" -eq 1 ]; then
+  OBSYNC_HEADLESS_BASE_URL="$BASE_URL" sh "$REPO_ROOT/scripts/install-headless.sh"
 fi
 
 echo
