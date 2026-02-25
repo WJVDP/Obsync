@@ -2,6 +2,18 @@
 
 Self-hosted realtime sync for Obsidian vaults, with CRDT markdown merging, encrypted blob transfer, and automation-friendly HTTP APIs for OpenClaw and other agents.
 
+## One-Line Install
+
+```bash
+npm run install:one-line
+```
+
+Optional (also installs plugin into a local vault path):
+
+```bash
+npm run install:one-line -- "/absolute/path/to/your/vault"
+```
+
 ## What Obsync Is
 
 Obsync is a single-tenant sync stack for teams or individuals who want full control over their Obsidian sync infrastructure. It combines a TypeScript API server, Postgres metadata storage, MinIO object storage for encrypted chunks, and an Obsidian plugin that supports realtime websocket updates with polling fallback.
