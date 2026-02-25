@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://obsync.local/schemas/SyncOp.json",
+  "$id": "https://raw.githubusercontent.com/WJVDP/Obsync/main/docs/schemas/SyncOp.json",
   "title": "SyncOp",
   "description": "A single operation submitted by a client device. Markdown updates contain CRDT payloads; binary references contain blob metadata.",
   "type": "object",

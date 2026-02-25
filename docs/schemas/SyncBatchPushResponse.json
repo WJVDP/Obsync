@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://obsync.local/schemas/SyncBatchPushResponse.json",
+  "$id": "https://raw.githubusercontent.com/WJVDP/Obsync/main/docs/schemas/SyncBatchPushResponse.json",
   "title": "SyncBatchPushResponse",
   "description": "Server acknowledgement after push processing.",
   "type": "object",

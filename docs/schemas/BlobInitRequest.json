@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://obsync.local/schemas/BlobInitRequest.json",
+  "$id": "https://raw.githubusercontent.com/WJVDP/Obsync/main/docs/schemas/BlobInitRequest.json",
   "title": "BlobInitRequest",
   "description": "Starts or resumes a blob upload session.",
   "type": "object",

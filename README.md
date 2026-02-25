@@ -1,55 +1,53 @@
 # Obsync
 
-Self-hosted realtime sync for Obsidian vaults, with CRDT markdown merging, encrypted blob transfer, and automation-friendly HTTP APIs for OpenClaw and other agents.
+Self-hosted realtime sync for Obsidian vaults, with CRDT markdown convergence, encrypted blob transport, and API endpoints designed for automation agents.
 
-## One-Line Install
+![Obsync hero](docs/assets/readme/obsync-hero-dark-web.png)
 
-Server stack (works with private or public repo access):
+## Why Obsync
 
-```bash
-git clone https://github.com/WJVDP/Obsync.git && cd Obsync && sh scripts/install-server.sh
+- Keep sync infrastructure under your control (single-tenant, self-hosted).
+- Merge concurrent markdown edits deterministically with Yjs.
+- Store encrypted blob chunks in S3-compatible storage.
+- Use JWT or scoped API keys for humans and agents.
+- Stream updates over websocket with polling fallback.
+
+## What Is Included
+
+| Component | Location | Responsibility |
+| --- | --- | --- |
+| API server | `apps/server` | Auth, vault/device lifecycle, sync push/pull, blob APIs, key envelopes, realtime stream |
+| Obsidian plugin | `apps/plugin` | Vault event capture, op building, sync transport, realtime client, local state |
+| Shared types/crypto | `packages/shared` | Schemas, chunking, crypto utilities, shared contracts |
+| Infra stack | `docker-compose.yml` + `infra/*` | Postgres, MinIO, Convex backend, Prometheus, Loki, OTel collector, Grafana |
+
+## Architecture (High Level)
+
+```mermaid
+graph LR
+  O[Obsidian Plugin] -->|Sync Ops + Blob Chunks| A[Obsync API]
+  A -->|Op Log + Metadata| P[(Postgres)]
+  A -->|Encrypted Chunks| S[(MinIO / S3)]
+  A -->|Realtime Events| R[Realtime Subscribers]
 ```
 
-Plugin-only install (local machine with Obsidian vault path):
+## One-Line Install Options
 
-```bash
-git clone https://github.com/WJVDP/Obsync.git && cd Obsync && sh scripts/install-plugin.sh "/absolute/path/to/your/vault"
-```
-
-If/when this repo is public, you can also use curl-only installers:
+Install server stack (new host/VPS):
 
 ```bash
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/WJVDP/Obsync/main/scripts/install-server.sh)"
+```
+
+Install plugin into a local Obsidian vault:
+
+```bash
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/WJVDP/Obsync/main/scripts/install-plugin.sh)" -- "/absolute/path/to/your/vault"
 ```
 
-## What Obsync Is
+## Quick Start (Repo Checkout)
 
-Obsync is a single-tenant sync stack for teams or individuals who want full control over their Obsidian sync infrastructure. It combines a TypeScript API server, Postgres metadata storage, MinIO object storage for encrypted chunks, and an Obsidian plugin that supports realtime websocket updates with polling fallback.
-
-## Current Stability
-
-Obsync is currently **ship-ready for private self-host deployments** (single tenant). It is not positioned yet as a multi-tenant SaaS product. You should treat this as production-capable for your own environment, with documented operational runbooks and CI gates.
-
-## Architecture at a Glance
-
-1. **Server (`apps/server`)**: Fastify HTTP + websocket sync APIs.
-2. **Postgres**: op log, cursors, key envelopes, metadata.
-3. **MinIO / S3**: encrypted blob chunks.
-4. **Plugin (`apps/plugin`)**: capture vault events, push/pull sync ops, realtime channel.
-5. **Realtime channel**: websocket stream with reconnect and polling fallback.
-
-## Prerequisites
-
-1. Docker Engine
-2. Docker Compose plugin (`docker compose`)
-3. Node.js 20+
-4. npm 10+
-5. Obsidian desktop (plugin installed locally)
-
-## 5-Minute Quick Start (VPS + Local Plugin)
-
-### 1) Clone and configure
+### 1) Clone and prepare
 
 ```bash
 git clone https://github.com/WJVDP/Obsync.git
@@ -57,46 +55,45 @@ cd Obsync
 cp .env.example .env
 ```
 
-Set at least:
+### 2) Set a strong JWT secret
 
-- `NODE_ENV=production`
-- `JWT_SECRET=<long-random-secret-at-least-32-chars>`
-- `DATABASE_URL=postgres://obsync:obsync@postgres:5432/obsync`
-
-### 2) Start stack
+The server runs with `NODE_ENV=production` and rejects `JWT_SECRET=change-me` at startup. Set a real value in `.env`:
 
 ```bash
-docker compose up -d
+# generate a strong secret
+openssl rand -hex 32
+# then set it in .env
+JWT_SECRET=<output from above>
 ```
 
-### 3) Health check
+### 3) Start the stack
+
+```bash
+docker compose up -d --build
+```
+
+### 4) Verify health
 
 ```bash
 curl -sS http://localhost:8080/v1/admin/health
 ```
 
-Expected: `{"status":"ok",...}`
+Expected response contains `"status":"ok"`.
 
-### 4) Bootstrap first user and create vault
-
-Create first local user (one-time, only when user table is empty):
+### 5) Bootstrap first user (one-time)
 
 ```bash
 BOOTSTRAP_EMAIL=user@example.com BOOTSTRAP_PASSWORD='change-this-password' npm run -w @obsync/server bootstrap:user
 ```
 
-Login and capture `JWT`:
+### 6) Login and create a vault
 
 ```bash
 BASE_URL=http://localhost:8080
 JWT=$(curl -sS "$BASE_URL/v1/auth/login" \
   -H 'content-type: application/json' \
   -d '{"email":"user@example.com","password":"change-this-password"}' | jq -r '.token')
-```
 
-Create vault and capture `VAULT_ID`:
-
-```bash
 VAULT_ID=$(curl -sS "$BASE_URL/v1/vaults" \
   -H "authorization: Bearer $JWT" \
   -H 'content-type: application/json' \
@@ -105,59 +102,37 @@ VAULT_ID=$(curl -sS "$BASE_URL/v1/vaults" \
 echo "$VAULT_ID"
 ```
 
-### 5) Install plugin locally
-
-On your local machine (with your Obsidian vault path):
+### 7) Install Obsidian plugin
 
 ```bash
-npm install
-npm run -w @obsync/plugin install:obsidian -- "/absolute/path/to/your/vault"
+sh scripts/install-plugin.sh "/absolute/path/to/your/vault"
 ```
 
-Plugin files are installed to:
-
-- `<vault>/.obsidian/plugins/obsync/main.js`
-- `<vault>/.obsidian/plugins/obsync/manifest.json`
-
-### 6) Configure plugin and connect
+### 8) Connect from Obsidian
 
 In Obsidian:
 
-1. Settings -> Community Plugins -> Reload plugins
-2. Enable `Obsync`
-3. Settings -> Obsync:
-   - `Base URL`: your server URL (for example `http://<vps-ip>:8080`)
-   - `Vault ID`: `VAULT_ID`
-   - Auth: `Email` + `Password` **or** API token
+1. Open `Settings -> Community Plugins -> Reload plugins`.
+2. Enable `Obsync`.
+3. Open `Settings -> Obsync` and set:
+   - `Base URL`: `http://<server-host>:8080`
+   - `Vault ID`: value from the API call above
+   - Auth: `API Token` or `Email + Password`
    - `Realtime`: enabled
-4. Click `Connect`
+4. Click `Connect`.
 
-## Verify Realtime Sync
+## Agent/API Quick Flow
 
-Expected UI signals:
-
-1. Status bar shows `Obsync: Live` when websocket is active.
-2. If websocket is unavailable, status falls back to `Obsync: Polling`.
-
-Quick validation:
-
-1. Create `sync-test-a.md` on device A.
-2. Confirm it appears on device B without pressing `Sync now`.
-3. Rename or delete it on device B; confirm device A converges.
-
-## Use with OpenClaw
-
-### 1) Generate scoped API key
+Create scoped API key:
 
 ```bash
-BASE_URL=http://localhost:8080
 API_KEY=$(curl -sS "$BASE_URL/v1/apikeys" \
   -H "authorization: Bearer $JWT" \
   -H 'content-type: application/json' \
   -d '{"name":"openclaw-agent","scopes":["read","write"]}' | jq -r '.apiKey')
 ```
 
-### 2) Minimal read flow
+Pull since cursor `0`:
 
 ```bash
 DEVICE_ID=11111111-1111-4111-8111-111111111111
@@ -165,58 +140,73 @@ curl -sS "$BASE_URL/v1/vaults/$VAULT_ID/sync/pull?since=0&deviceId=$DEVICE_ID" \
   -H "authorization: Bearer $API_KEY"
 ```
 
-### 3) Minimal write flow
+Push a markdown update:
 
 ```bash
-DEVICE_ID=11111111-1111-4111-8111-111111111111
 curl -sS "$BASE_URL/v1/vaults/$VAULT_ID/sync/push" \
   -H "authorization: Bearer $API_KEY" \
   -H 'content-type: application/json' \
   -d "{\"deviceId\":\"$DEVICE_ID\",\"cursor\":0,\"ops\":[{\"idempotencyKey\":\"op-001\",\"deviceId\":\"$DEVICE_ID\",\"path\":\"agent.md\",\"opType\":\"md_update\",\"logicalClock\":1,\"payload\":{\"path\":\"agent.md\",\"yUpdateBase64\":\"AQID\"},\"createdAt\":\"2026-02-25T00:00:00.000Z\"}]}"
 ```
 
-OpenClaw details:
-
-- [OpenClaw playbook](docs/llm/openclaw-playbook.md)
-- [Operation recipes](docs/examples/operation-recipes.json)
-
-## Troubleshooting
-
-### `docker compose` command not found
-
-1. Install Docker Desktop or Docker Engine with Compose plugin.
-2. Verify with:
+## Local Development
 
 ```bash
-docker compose version
+npm install
+npm run build
+npm run test
+npm run typecheck
+npm run dev
 ```
 
-### Realtime stuck reconnecting
+Useful package-level commands:
 
-1. Confirm server logs for websocket errors.
-2. Verify plugin now authenticates via `Sec-WebSocket-Protocol`, not query token.
-3. Check `GET /v1/admin/health` and network reachability.
+```bash
+npm run -w @obsync/server dev
+npm run -w @obsync/plugin build:obsidian
+npm run -w @obsync/plugin install:obsidian -- "/absolute/path/to/your/vault"
+```
 
-### `Vault not found` (404)
+## Repo Map
 
-1. Ensure plugin `Vault ID` matches API-created vault.
-2. Ensure token belongs to the same vault owner account.
+```text
+apps/
+  plugin/   Obsidian plugin implementation
+  server/   Fastify API + websocket server
+packages/
+  shared/   Shared schemas, crypto, chunking
+docs/
+  api/      OpenAPI and API docs
+  examples/ Curl and TypeScript examples
+  ops/      Runbook, SLO, release checklist
+  llm/      OpenClaw automation playbook
+infra/
+  prometheus/
+  loki/
+  otel/
+```
 
-### Settings not persisting
-
-Check plugin settings file path:
-
-- `<vault>/.obsidian/plugins/obsync/settings.json`
-- fallback: `<vault>/.obsync/settings.json`
-
-## Docs Map
+## Documentation Index
 
 - Architecture overview: [docs/architecture/overview.md](docs/architecture/overview.md)
 - API contract: [docs/api/openapi.yaml](docs/api/openapi.yaml)
-- Schemas: [docs/schemas](docs/schemas)
-- cURL examples: [docs/examples/curl.md](docs/examples/curl.md)
-- Plugin install details: [docs/ops/obsidian-plugin-install.md](docs/ops/obsidian-plugin-install.md)
+- cURL recipes: [docs/examples/curl.md](docs/examples/curl.md)
+- Endpoint examples: [docs/examples/endpoints.md](docs/examples/endpoints.md)
+- Obsidian plugin install details: [docs/ops/obsidian-plugin-install.md](docs/ops/obsidian-plugin-install.md)
 - Ops runbook: [docs/ops/runbook.md](docs/ops/runbook.md)
 - SLOs: [docs/ops/slo.md](docs/ops/slo.md)
 - OpenClaw playbook: [docs/llm/openclaw-playbook.md](docs/llm/openclaw-playbook.md)
 - Release checklist: [docs/ops/release-checklist.md](docs/ops/release-checklist.md)
+
+## Troubleshooting
+
+- `docker compose` missing:
+  - Install Docker with Compose plugin and verify `docker compose version`.
+- Realtime loops or falls back to polling:
+  - Check `GET /v1/admin/health` and server logs for websocket auth/scope errors.
+- `Vault not found`:
+  - Verify plugin `Vault ID` and user/token ownership match.
+- Plugin settings not persisted:
+  - Confirm vault write access and check:
+    - `<vault>/.obsidian/plugins/obsync/settings.json`
+    - `<vault>/.obsync/settings.json`
