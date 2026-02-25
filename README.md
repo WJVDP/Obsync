@@ -178,7 +178,7 @@ docs/
   api/      OpenAPI and API docs
   examples/ Curl and TypeScript examples
   ops/      Runbook, SLO, release checklist
-  llm/      OpenClaw playbook and changelog conventions
+  llm/      OpenClaw automation playbook
 infra/
   prometheus/
   loki/

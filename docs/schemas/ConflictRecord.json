@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://obsync.local/schemas/ConflictRecord.json",
+  "$id": "https://raw.githubusercontent.com/WJVDP/Obsync/main/docs/schemas/ConflictRecord.json",
   "title": "ConflictRecord",
   "description": "Conflict metadata persisted for non-CRDT collisions or path resolution events.",
   "type": "object",
