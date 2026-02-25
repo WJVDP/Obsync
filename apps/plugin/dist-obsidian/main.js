@@ -8853,6 +8853,7 @@ var DEFAULT_SETTINGS = {
 };
 var PERIODIC_PULL_INTERVAL_MS = 3e4;
 var MAX_RECONNECT_DELAY_MS = 3e4;
+var FALLBACK_SETTINGS_PATH = ".obsync/settings.json";
 var ObsidianPluginDataPersistence = class {
   constructor(plugin) {
     this.plugin = plugin;
@@ -8876,7 +8877,9 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
     __publicField(this, "syncEngine", null);
     __publicField(this, "suppressedPaths", /* @__PURE__ */ new Map());
     __publicField(this, "statusBarEl", null);
+    __publicField(this, "ribbonIconEl", null);
     __publicField(this, "currentStatus", "disconnected");
+    __publicField(this, "currentStatusDetail");
     __publicField(this, "periodicPullTimer", null);
     __publicField(this, "reconnectTimer", null);
     __publicField(this, "reconnectAttempt", 0);
@@ -8889,6 +8892,13 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
       await this.saveSettings();
     }
     this.statusBarEl = this.addStatusBarItem();
+    this.ribbonIconEl = this.addRibbonIcon("wifi-off", "Obsync: Disconnected", () => {
+      if (this.syncEngine) {
+        void this.syncNow();
+        return;
+      }
+      void this.connectAndStart();
+    });
     this.setConnectionStatus("disconnected");
     this.captureUnsubscribe = this.eventCapture.onEvent((event) => {
       void this.onCapturedEvent(event);
@@ -9018,6 +9028,7 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
         ...DEFAULT_SETTINGS,
         ...fileSettings
       };
+      await this.mirrorSettingsToPluginData();
       return;
     }
     const loaded = await this.readPluginData();
@@ -9029,7 +9040,12 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
     await this.saveSettings();
   }
   async saveSettings() {
-    await this.writeSettingsFile(this.settings);
+    await this.mirrorSettingsToPluginData();
+    try {
+      await this.writeSettingsFile(this.settings);
+    } catch (error) {
+      console.error("[Obsync] Failed to persist settings file", error);
+    }
   }
   async onCapturedEvent(event) {
     if (!this.syncEngine) {
@@ -9241,39 +9257,90 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
   }
   setConnectionStatus(status, detail) {
     this.currentStatus = status;
-    if (!this.statusBarEl) {
-      return;
+    this.currentStatusDetail = detail;
+    const label = this.getStatusLabel(status);
+    const text2 = `Obsync: ${label}${detail ? ` (${detail})` : ""}`;
+    if (this.statusBarEl) {
+      this.statusBarEl.setText(text2);
     }
-    const label = status === "disconnected" ? "Disconnected" : status === "connecting" ? "Connecting" : status === "connected_live" ? "Live" : status === "connected_polling" ? "Polling" : status === "reconnecting" ? "Reconnecting" : status === "syncing" ? "Syncing" : "Error";
-    this.statusBarEl.setText(`Obsync: ${label}${detail ? ` (${detail})` : ""}`);
+    if (this.ribbonIconEl) {
+      (0, import_obsidian.setIcon)(this.ribbonIconEl, this.getStatusIcon(status));
+      this.ribbonIconEl.setAttribute("aria-label", text2);
+      this.ribbonIconEl.setAttribute("data-obsync-status", status);
+    }
   }
-  getSettingsPath() {
+  getStatusLabel(status) {
+    return status === "disconnected" ? "Disconnected" : status === "connecting" ? "Connecting" : status === "connected_live" ? "Live" : status === "connected_polling" ? "Polling" : status === "reconnecting" ? "Reconnecting" : status === "syncing" ? "Syncing" : "Error";
+  }
+  getStatusIcon(status) {
+    return status === "connected_live" ? "wifi" : status === "connected_polling" || status === "connecting" || status === "reconnecting" || status === "syncing" ? "refresh-cw" : status === "error" ? "alert-triangle" : "wifi-off";
+  }
+  getConnectionStatusText() {
+    const label = this.getStatusLabel(this.currentStatus);
+    return `${label}${this.currentStatusDetail ? ` (${this.currentStatusDetail})` : ""}`;
+  }
+  getPrimarySettingsPath() {
     return (0, import_obsidian.normalizePath)(`${this.app.vault.configDir}/plugins/${this.manifest.id}/settings.json`);
   }
-  getSettingsDirPath() {
-    return (0, import_obsidian.normalizePath)(`${this.app.vault.configDir}/plugins/${this.manifest.id}`);
+  getFallbackSettingsPath() {
+    return (0, import_obsidian.normalizePath)(FALLBACK_SETTINGS_PATH);
+  }
+  getSettingsPathHint() {
+    return `${this.getPrimarySettingsPath()} (fallback: ${this.getFallbackSettingsPath()})`;
   }
   async readSettingsFile() {
-    const path = this.getSettingsPath();
-    try {
-      const exists = await this.app.vault.adapter.exists(path);
-      if (!exists) {
-        return null;
+    const candidates = [this.getPrimarySettingsPath(), this.getFallbackSettingsPath()];
+    for (const path of candidates) {
+      try {
+        const exists = await this.app.vault.adapter.exists(path);
+        if (!exists) {
+          continue;
+        }
+        const raw = await this.app.vault.adapter.read(path);
+        return JSON.parse(raw);
+      } catch {
+        continue;
       }
-      const raw = await this.app.vault.adapter.read(path);
-      return JSON.parse(raw);
-    } catch {
-      return null;
     }
+    return null;
   }
   async writeSettingsFile(settings) {
-    const dir = this.getSettingsDirPath();
-    const path = this.getSettingsPath();
-    const dirExists = await this.app.vault.adapter.exists(dir);
-    if (!dirExists) {
-      await this.app.vault.adapter.mkdir(dir);
+    const payload = JSON.stringify(settings, null, 2);
+    const candidates = [this.getPrimarySettingsPath(), this.getFallbackSettingsPath()];
+    let lastError = null;
+    for (const path of candidates) {
+      try {
+        await this.writeFileWithParentDir(path, payload);
+        return;
+      } catch (error) {
+        lastError = error;
+      }
     }
-    await this.app.vault.adapter.write(path, JSON.stringify(settings, null, 2));
+    if (lastError) {
+      throw lastError;
+    }
+  }
+  async writeFileWithParentDir(path, payload) {
+    const parentDir = this.getParentPath(path);
+    if (parentDir) {
+      const dirExists = await this.app.vault.adapter.exists(parentDir);
+      if (!dirExists) {
+        await this.app.vault.adapter.mkdir(parentDir);
+      }
+    }
+    await this.app.vault.adapter.write(path, payload);
+  }
+  getParentPath(path) {
+    const index = path.lastIndexOf("/");
+    if (index <= 0) {
+      return "";
+    }
+    return path.slice(0, index);
+  }
+  async mirrorSettingsToPluginData() {
+    const data = await this.readPluginData();
+    data.settings = this.settings;
+    await this.writePluginData(data);
   }
   async readPluginData() {
     return await this.loadData() ?? {};
@@ -9291,6 +9358,8 @@ var ObsyncSettingTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Obsync" });
+    containerEl.createEl("p", { text: `Connection: ${this.plugin.getConnectionStatusText()}` });
+    containerEl.createEl("p", { text: `Settings file: ${this.plugin.getSettingsPathHint()}` });
     new import_obsidian.Setting(containerEl).setName("Base URL").setDesc("Obsync API base URL").addText(
       (text2) => text2.setPlaceholder("http://localhost:8080").setValue(this.plugin.settings.baseUrl).onChange(async (value) => {
         this.plugin.settings.baseUrl = value.trim();

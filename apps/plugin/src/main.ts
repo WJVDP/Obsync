@@ -6,7 +6,8 @@ import {
   Setting,
   TAbstractFile,
   TFile,
-  normalizePath
+  normalizePath,
+  setIcon
 } from "obsidian";
 import { v4 as uuidv4 } from "uuid";
 import { VaultEventCapture, type VaultEvent } from "./event-capture/vaultEventCapture.js";
@@ -56,6 +57,7 @@ const DEFAULT_SETTINGS: ObsyncPluginSettings = {
 
 const PERIODIC_PULL_INTERVAL_MS = 30_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
+const FALLBACK_SETTINGS_PATH = ".obsync/settings.json";
 
 class ObsidianPluginDataPersistence implements SyncStatePersistence {
   constructor(private readonly plugin: ObsyncPlugin) {}
@@ -81,7 +83,9 @@ export default class ObsyncPlugin extends Plugin {
   private readonly suppressedPaths = new Map<string, number>();
 
   private statusBarEl: HTMLElement | null = null;
+  private ribbonIconEl: HTMLElement | null = null;
   private currentStatus: ConnectionStatus = "disconnected";
+  private currentStatusDetail: string | undefined;
 
   private periodicPullTimer: number | null = null;
   private reconnectTimer: number | null = null;
@@ -97,6 +101,13 @@ export default class ObsyncPlugin extends Plugin {
     }
 
     this.statusBarEl = this.addStatusBarItem();
+    this.ribbonIconEl = this.addRibbonIcon("wifi-off", "Obsync: Disconnected", () => {
+      if (this.syncEngine) {
+        void this.syncNow();
+        return;
+      }
+      void this.connectAndStart();
+    });
     this.setConnectionStatus("disconnected");
 
     this.captureUnsubscribe = this.eventCapture.onEvent((event) => {
@@ -246,6 +257,7 @@ export default class ObsyncPlugin extends Plugin {
         ...DEFAULT_SETTINGS,
         ...fileSettings
       };
+      await this.mirrorSettingsToPluginData();
       return;
     }
 
@@ -262,7 +274,12 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
-    await this.writeSettingsFile(this.settings);
+    await this.mirrorSettingsToPluginData();
+    try {
+      await this.writeSettingsFile(this.settings);
+    } catch (error) {
+      console.error("[Obsync] Failed to persist settings file", error);
+    }
   }
 
   private async onCapturedEvent(event: VaultEvent): Promise<void> {
@@ -517,60 +534,128 @@ export default class ObsyncPlugin extends Plugin {
 
   private setConnectionStatus(status: ConnectionStatus, detail?: string): void {
     this.currentStatus = status;
+    this.currentStatusDetail = detail;
 
-    if (!this.statusBarEl) {
-      return;
+    const label = this.getStatusLabel(status);
+    const text = `Obsync: ${label}${detail ? ` (${detail})` : ""}`;
+
+    if (this.statusBarEl) {
+      this.statusBarEl.setText(text);
     }
 
-    const label =
-      status === "disconnected"
-        ? "Disconnected"
-        : status === "connecting"
-          ? "Connecting"
-          : status === "connected_live"
-            ? "Live"
-            : status === "connected_polling"
-              ? "Polling"
-              : status === "reconnecting"
-                ? "Reconnecting"
-                : status === "syncing"
-                  ? "Syncing"
-                  : "Error";
-
-    this.statusBarEl.setText(`Obsync: ${label}${detail ? ` (${detail})` : ""}`);
+    if (this.ribbonIconEl) {
+      setIcon(this.ribbonIconEl, this.getStatusIcon(status));
+      this.ribbonIconEl.setAttribute("aria-label", text);
+      this.ribbonIconEl.setAttribute("data-obsync-status", status);
+    }
   }
 
-  private getSettingsPath(): string {
+  private getStatusLabel(status: ConnectionStatus): string {
+    return status === "disconnected"
+      ? "Disconnected"
+      : status === "connecting"
+        ? "Connecting"
+        : status === "connected_live"
+          ? "Live"
+          : status === "connected_polling"
+            ? "Polling"
+            : status === "reconnecting"
+              ? "Reconnecting"
+              : status === "syncing"
+                ? "Syncing"
+                : "Error";
+  }
+
+  private getStatusIcon(status: ConnectionStatus): string {
+    return status === "connected_live"
+      ? "wifi"
+      : status === "connected_polling" || status === "connecting" || status === "reconnecting" || status === "syncing"
+        ? "refresh-cw"
+        : status === "error"
+          ? "alert-triangle"
+          : "wifi-off";
+  }
+
+  getConnectionStatusText(): string {
+    const label = this.getStatusLabel(this.currentStatus);
+    return `${label}${this.currentStatusDetail ? ` (${this.currentStatusDetail})` : ""}`;
+  }
+
+  private getPrimarySettingsPath(): string {
     return normalizePath(`${this.app.vault.configDir}/plugins/${this.manifest.id}/settings.json`);
   }
 
-  private getSettingsDirPath(): string {
-    return normalizePath(`${this.app.vault.configDir}/plugins/${this.manifest.id}`);
+  private getFallbackSettingsPath(): string {
+    return normalizePath(FALLBACK_SETTINGS_PATH);
+  }
+
+  getSettingsPathHint(): string {
+    return `${this.getPrimarySettingsPath()} (fallback: ${this.getFallbackSettingsPath()})`;
   }
 
   private async readSettingsFile(): Promise<Partial<ObsyncPluginSettings> | null> {
-    const path = this.getSettingsPath();
-    try {
-      const exists = await this.app.vault.adapter.exists(path);
-      if (!exists) {
-        return null;
-      }
+    const candidates = [this.getPrimarySettingsPath(), this.getFallbackSettingsPath()];
+    for (const path of candidates) {
+      try {
+        const exists = await this.app.vault.adapter.exists(path);
+        if (!exists) {
+          continue;
+        }
 
-      const raw = await this.app.vault.adapter.read(path);
-      return JSON.parse(raw) as Partial<ObsyncPluginSettings>;
-    } catch {
-      return null;
+        const raw = await this.app.vault.adapter.read(path);
+        return JSON.parse(raw) as Partial<ObsyncPluginSettings>;
+      } catch {
+        continue;
+      }
     }
+
+    return null;
   }
 
   private async writeSettingsFile(settings: ObsyncPluginSettings): Promise<void> {
-    const dir = this.getSettingsDirPath();
-    const path = this.getSettingsPath();
-    const dirExists = await this.app.vault.adapter.exists(dir);
-    if (!dirExists) {
-      await this.app.vault.adapter.mkdir(dir);
+    const payload = JSON.stringify(settings, null, 2);
+    const candidates = [this.getPrimarySettingsPath(), this.getFallbackSettingsPath()];
+
+    let lastError: unknown = null;
+    for (const path of candidates) {
+      try {
+        await this.writeFileWithParentDir(path, payload);
+        return;
+      } catch (error) {
+        lastError = error;
+      }
     }
-    await this.app.vault.adapter.write(path, JSON.stringify(settings, null, 2));
+
+    if (lastError) {
+      throw lastError;
+    }
+  }
+
+  private async writeFileWithParentDir(path: string, payload: string): Promise<void> {
+    const parentDir = this.getParentPath(path);
+    if (parentDir) {
+      const dirExists = await this.app.vault.adapter.exists(parentDir);
+      if (!dirExists) {
+        await this.app.vault.adapter.mkdir(parentDir);
+      }
+    }
+
+    await this.app.vault.adapter.write(path, payload);
+  }
+
+  private getParentPath(path: string): string {
+    const index = path.lastIndexOf("/");
+    if (index <= 0) {
+      return "";
+    }
+
+    return path.slice(0, index);
+  }
+
+  private async mirrorSettingsToPluginData(): Promise<void> {
+    const data = await this.readPluginData();
+    data.settings = this.settings;
+    await this.writePluginData(data);
   }
 
   async readPluginData(): Promise<ObsyncPluginData> {
@@ -591,6 +676,8 @@ class ObsyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Obsync" });
+    containerEl.createEl("p", { text: `Connection: ${this.plugin.getConnectionStatusText()}` });
+    containerEl.createEl("p", { text: `Settings file: ${this.plugin.getSettingsPathHint()}` });
 
     new Setting(containerEl)
       .setName("Base URL")
