@@ -18,6 +18,7 @@ Self-hosted realtime sync for Obsidian vaults, with CRDT markdown convergence, e
 | --- | --- | --- |
 | API server | `apps/server` | Auth, vault/device lifecycle, sync push/pull, blob APIs, key envelopes, realtime stream |
 | Obsidian plugin | `apps/plugin` | Vault event capture, op building, sync transport, realtime client, local state |
+| Headless sync worker | `apps/server/src/headlessSync.ts` | Poll sync stream and mirror markdown/file operations into a host path |
 | Shared types/crypto | `packages/shared` | Schemas, chunking, crypto utilities, shared contracts |
 | Infra stack | `docker-compose.yml` + `infra/*` | Postgres, MinIO, Convex backend, Prometheus, Loki, OTel collector, Grafana |
 
@@ -48,7 +49,7 @@ The installer is interactive and will guide you through:
 1. Starting the server stack with Docker Compose
 2. Bootstrapping first user + creating initial vault
 3. Optionally installing the Obsidian plugin into a local vault path
-4. Optionally configuring headless vault sync credentials in `.env`
+4. Optionally configuring and starting headless vault mirror sync
 
 ## Quick Start (Repo Checkout)
 
@@ -141,12 +142,21 @@ The installer will:
 3. Create a scoped API key (`read`,`write`) or prompt to keep/rotate existing `HEADLESS_API_TOKEN`.
 4. Persist these keys in `.env` without reordering unrelated entries:
    - `HEADLESS_BASE_URL`
+   - `HEADLESS_SYNC_BASE_URL` (defaults to `http://server:8080` for containerized worker)
    - `HEADLESS_VAULT_ID`
    - `HEADLESS_API_TOKEN`
    - `HEADLESS_MIRROR_PATH`
+   - `HEADLESS_POLL_INTERVAL_MS`
 
 For security, the installer prints only a masked API token preview after saving.
-If a `headless-sync` Docker Compose service exists, the installer also offers to start it.
+It also offers to start the `headless-sync` Docker Compose profile.
+
+Verify headless sync worker:
+
+```bash
+docker compose --profile headless-sync ps
+docker compose --profile headless-sync logs -f headless-sync
+```
 
 ## Agent/API Quick Flow
 

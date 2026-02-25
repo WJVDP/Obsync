@@ -193,6 +193,7 @@ default_base_url="$(read_env_var "$ENV_FILE" "HEADLESS_BASE_URL")"
 if [ -z "$default_base_url" ]; then
   default_base_url="${OBSYNC_HEADLESS_BASE_URL:-http://localhost:8080}"
 fi
+default_sync_base_url="$(read_env_var "$ENV_FILE" "HEADLESS_SYNC_BASE_URL")"
 default_vault_id="$(read_env_var "$ENV_FILE" "HEADLESS_VAULT_ID")"
 default_mirror_path="$(read_env_var "$ENV_FILE" "HEADLESS_MIRROR_PATH")"
 if [ -z "$default_mirror_path" ]; then
@@ -200,6 +201,17 @@ if [ -z "$default_mirror_path" ]; then
 fi
 
 BASE_URL="$(ask_input "Server base URL" "$default_base_url")"
+SYNC_BASE_URL="$default_sync_base_url"
+if [ -z "$SYNC_BASE_URL" ]; then
+  case "$BASE_URL" in
+    http://localhost:*|https://localhost:*|http://127.0.0.1:*|https://127.0.0.1:*)
+      SYNC_BASE_URL="http://server:8080"
+      ;;
+    *)
+      SYNC_BASE_URL="$BASE_URL"
+      ;;
+  esac
+fi
 EMAIL="$(ask_input "Account email" "${OBSYNC_HEADLESS_EMAIL:-user@example.com}")"
 PASSWORD="$(ask_secret "Account password")"
 if [ -z "$PASSWORD" ]; then
@@ -310,6 +322,7 @@ working_env_file="$(mktemp)"
 register_tmp_file "$working_env_file"
 cp "$ENV_FILE" "$working_env_file"
 upsert_env_var "$working_env_file" "HEADLESS_BASE_URL" "$BASE_URL"
+upsert_env_var "$working_env_file" "HEADLESS_SYNC_BASE_URL" "$SYNC_BASE_URL"
 upsert_env_var "$working_env_file" "HEADLESS_VAULT_ID" "$VAULT_ID"
 upsert_env_var "$working_env_file" "HEADLESS_API_TOKEN" "$HEADLESS_API_TOKEN"
 upsert_env_var "$working_env_file" "HEADLESS_MIRROR_PATH" "$MIRROR_PATH"
@@ -318,6 +331,7 @@ mv "$working_env_file" "$ENV_FILE"
 echo
 echo "Headless configuration saved to $ENV_FILE"
 echo "  HEADLESS_BASE_URL=$BASE_URL"
+echo "  HEADLESS_SYNC_BASE_URL=$SYNC_BASE_URL"
 echo "  HEADLESS_VAULT_ID=$VAULT_ID"
 echo "  HEADLESS_MIRROR_PATH=$MIRROR_PATH"
 echo "  HEADLESS_API_TOKEN=$(mask_secret "$HEADLESS_API_TOKEN")"

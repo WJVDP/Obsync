@@ -77,6 +77,15 @@ Notes:
 1. Installer logs in with provided credentials, creates a vault when needed, and creates a `read,write` API key.
 2. On reruns, if `HEADLESS_API_TOKEN` already exists, installer prompts whether to keep it or rotate it.
 3. Installer prints only a masked token preview after save.
+4. Installer can start `headless-sync` via `docker compose --profile headless-sync up -d --build`.
+5. `HEADLESS_SYNC_BASE_URL` defaults to `http://server:8080` for containerized worker calls.
+
+Check worker status:
+
+```bash
+docker compose --profile headless-sync ps
+docker compose --profile headless-sync logs --tail=100 headless-sync
+```
 
 ## Device Registration and Key Envelopes
 

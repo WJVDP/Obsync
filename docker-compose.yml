@@ -79,6 +79,25 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  headless-sync:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    command: ["npm", "run", "-w", "@obsync/server", "headless:sync"]
+    environment:
+      HEADLESS_BASE_URL: ${HEADLESS_SYNC_BASE_URL:-http://server:8080}
+      HEADLESS_VAULT_ID: ${HEADLESS_VAULT_ID}
+      HEADLESS_API_TOKEN: ${HEADLESS_API_TOKEN}
+      HEADLESS_MIRROR_PATH: /mirror
+      HEADLESS_POLL_INTERVAL_MS: ${HEADLESS_POLL_INTERVAL_MS:-5000}
+    volumes:
+      - ${HEADLESS_MIRROR_PATH:-./data/headless-mirror}:/mirror
+    depends_on:
+      - server
+    profiles:
+      - headless-sync
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:latest
     command:
