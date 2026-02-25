@@ -77,8 +77,11 @@ Notes:
 1. Installer logs in with provided credentials, creates a vault when needed, and creates a `read,write` API key.
 2. On reruns, if `HEADLESS_API_TOKEN` already exists, installer prompts whether to keep it or rotate it.
 3. Installer prints only a masked token preview after save.
-4. Installer can start `headless-sync` via `docker compose --profile headless-sync up -d --build`.
-5. `HEADLESS_SYNC_BASE_URL` defaults to `http://server:8080` for containerized worker calls.
+4. Installer can optionally run an initial full-seed copy from a host-accessible vault path using `rsync --delete` (excluding `.obsidian`).
+5. Installer can start `headless-sync` via `docker compose --profile headless-sync up -d --build`.
+6. `HEADLESS_SYNC_BASE_URL` defaults to `http://server:8080` for containerized worker calls.
+7. On first worker start, when `HEADLESS_SEED_SOURCE_ENABLED=1`, the worker bootstraps from `HEADLESS_SEED_SOURCE_PATH` before incremental polling.
+8. `HEADLESS_PUSH_LOCAL_CHANGES=1` enables bidirectional markdown sync (mirror edits are pushed back as `md_update` ops).
 
 Check worker status:
 

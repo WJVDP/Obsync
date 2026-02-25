@@ -90,8 +90,12 @@ services:
       HEADLESS_API_TOKEN: ${HEADLESS_API_TOKEN}
       HEADLESS_MIRROR_PATH: /mirror
       HEADLESS_POLL_INTERVAL_MS: ${HEADLESS_POLL_INTERVAL_MS:-5000}
+      HEADLESS_PUSH_LOCAL_CHANGES: ${HEADLESS_PUSH_LOCAL_CHANGES:-1}
+      HEADLESS_SEED_SOURCE_ENABLED: ${HEADLESS_SEED_SOURCE_ENABLED:-0}
+      HEADLESS_SEED_SOURCE_PATH: /seed-source
     volumes:
       - ${HEADLESS_MIRROR_PATH:-./data/headless-mirror}:/mirror
+      - ${HEADLESS_SEED_SOURCE_PATH:-./data/headless-seed-source}:/seed-source:ro
     depends_on:
       - server
     profiles:

@@ -138,18 +138,24 @@ sh scripts/install-headless.sh
 The installer will:
 
 1. Prompt for `Base URL`, account email/password, optional `Vault ID`, and mirror path.
-2. Log in (`POST /v1/auth/login`) and create a vault if no vault id is supplied.
-3. Create a scoped API key (`read`,`write`) or prompt to keep/rotate existing `HEADLESS_API_TOKEN`.
-4. Persist these keys in `.env` without reordering unrelated entries:
+2. Optionally run an initial full-seed copy (`rsync --delete`) from a host-accessible source path into the mirror path.
+3. Log in (`POST /v1/auth/login`) and create a vault if no vault id is supplied.
+4. Create a scoped API key (`read`,`write`) or prompt to keep/rotate existing `HEADLESS_API_TOKEN`.
+5. Persist these keys in `.env` without reordering unrelated entries:
    - `HEADLESS_BASE_URL`
    - `HEADLESS_SYNC_BASE_URL` (defaults to `http://server:8080` for containerized worker)
    - `HEADLESS_VAULT_ID`
    - `HEADLESS_API_TOKEN`
    - `HEADLESS_MIRROR_PATH`
    - `HEADLESS_POLL_INTERVAL_MS`
+   - `HEADLESS_PUSH_LOCAL_CHANGES` (default `1`, pushes local markdown edits from mirror back to vault)
+   - `HEADLESS_SEED_SOURCE_ENABLED`
+   - `HEADLESS_SEED_SOURCE_PATH`
 
 For security, the installer prints only a masked API token preview after saving.
 It also offers to start the `headless-sync` Docker Compose profile.
+On first service start, when `HEADLESS_SEED_SOURCE_ENABLED=1`, the worker bootstraps the mirror from `HEADLESS_SEED_SOURCE_PATH` (excluding `.obsidian`) before polling incremental ops.
+`headless-sync` mirrors server ops into the host mirror path and, when `HEADLESS_PUSH_LOCAL_CHANGES=1`, pushes local markdown changes from mirror back to the vault.
 
 Verify headless sync worker:
 

@@ -196,8 +196,17 @@ fi
 default_sync_base_url="$(read_env_var "$ENV_FILE" "HEADLESS_SYNC_BASE_URL")"
 default_vault_id="$(read_env_var "$ENV_FILE" "HEADLESS_VAULT_ID")"
 default_mirror_path="$(read_env_var "$ENV_FILE" "HEADLESS_MIRROR_PATH")"
+default_seed_source_path="$(read_env_var "$ENV_FILE" "HEADLESS_SEED_SOURCE_PATH")"
+default_seed_enabled="$(read_env_var "$ENV_FILE" "HEADLESS_SEED_SOURCE_ENABLED")"
+default_push_local="$(read_env_var "$ENV_FILE" "HEADLESS_PUSH_LOCAL_CHANGES")"
 if [ -z "$default_mirror_path" ]; then
   default_mirror_path="/srv/obsync/vault-mirror"
+fi
+if [ "$default_seed_enabled" != "1" ]; then
+  default_seed_source_path=""
+fi
+if [ "$default_push_local" != "0" ]; then
+  default_push_local="1"
 fi
 
 BASE_URL="$(ask_input "Server base URL" "$default_base_url")"
@@ -224,6 +233,21 @@ if [ -z "$VAULT_ID" ]; then
   VAULT_NAME="$(ask_input "Vault name (used when creating vault)" "Personal Vault")"
 fi
 MIRROR_PATH="$(ask_input "Mirror path on host" "$default_mirror_path")"
+SEED_SOURCE_PATH="$(ask_input "Initial full-seed source path on this host (optional)" "$default_seed_source_path")"
+HEADLESS_SEED_SOURCE_ENABLED="0"
+if [ -n "$SEED_SOURCE_PATH" ]; then
+  if [ ! -d "$SEED_SOURCE_PATH" ]; then
+    echo "Seed source path not found: $SEED_SOURCE_PATH" >&2
+    exit 1
+  fi
+  HEADLESS_SEED_SOURCE_ENABLED="1"
+fi
+HEADLESS_PUSH_LOCAL_CHANGES="$default_push_local"
+if ask_yes_no "Push local markdown edits from mirror back to vault (bidirectional mode)?" "Y"; then
+  HEADLESS_PUSH_LOCAL_CHANGES="1"
+else
+  HEADLESS_PUSH_LOCAL_CHANGES="0"
+fi
 
 EMAIL_JSON="$(json_escape "$EMAIL")"
 PASSWORD_JSON="$(json_escape "$PASSWORD")"
@@ -318,6 +342,15 @@ if [ -z "$HEADLESS_API_TOKEN" ]; then
   exit 1
 fi
 
+if [ "$HEADLESS_SEED_SOURCE_ENABLED" = "1" ]; then
+  require_cmd rsync
+  if ask_yes_no "Run initial full-seed copy now? (rsync --delete, excludes .obsidian)" "Y"; then
+    mkdir -p "$MIRROR_PATH"
+    rsync -a --delete --exclude ".obsidian/" "$SEED_SOURCE_PATH/" "$MIRROR_PATH/"
+    echo "Initial mirror seed completed."
+  fi
+fi
+
 working_env_file="$(mktemp)"
 register_tmp_file "$working_env_file"
 cp "$ENV_FILE" "$working_env_file"
@@ -326,6 +359,9 @@ upsert_env_var "$working_env_file" "HEADLESS_SYNC_BASE_URL" "$SYNC_BASE_URL"
 upsert_env_var "$working_env_file" "HEADLESS_VAULT_ID" "$VAULT_ID"
 upsert_env_var "$working_env_file" "HEADLESS_API_TOKEN" "$HEADLESS_API_TOKEN"
 upsert_env_var "$working_env_file" "HEADLESS_MIRROR_PATH" "$MIRROR_PATH"
+upsert_env_var "$working_env_file" "HEADLESS_PUSH_LOCAL_CHANGES" "$HEADLESS_PUSH_LOCAL_CHANGES"
+upsert_env_var "$working_env_file" "HEADLESS_SEED_SOURCE_ENABLED" "$HEADLESS_SEED_SOURCE_ENABLED"
+upsert_env_var "$working_env_file" "HEADLESS_SEED_SOURCE_PATH" "$SEED_SOURCE_PATH"
 mv "$working_env_file" "$ENV_FILE"
 
 echo
@@ -334,7 +370,18 @@ echo "  HEADLESS_BASE_URL=$BASE_URL"
 echo "  HEADLESS_SYNC_BASE_URL=$SYNC_BASE_URL"
 echo "  HEADLESS_VAULT_ID=$VAULT_ID"
 echo "  HEADLESS_MIRROR_PATH=$MIRROR_PATH"
+echo "  HEADLESS_PUSH_LOCAL_CHANGES=$HEADLESS_PUSH_LOCAL_CHANGES"
+echo "  HEADLESS_SEED_SOURCE_ENABLED=$HEADLESS_SEED_SOURCE_ENABLED"
+if [ "$HEADLESS_SEED_SOURCE_ENABLED" = "1" ]; then
+  echo "  HEADLESS_SEED_SOURCE_PATH=$SEED_SOURCE_PATH"
+fi
 echo "  HEADLESS_API_TOKEN=$(mask_secret "$HEADLESS_API_TOKEN")"
+
+if [ "$HEADLESS_SEED_SOURCE_ENABLED" != "1" ]; then
+  echo
+  echo "For a one-time full mirror bootstrap from your local machine, run:"
+  echo "  rsync -av --delete --exclude \".obsidian/\" \"/path/to/local/vault/\" \"$(whoami)@$(hostname):$MIRROR_PATH/\""
+fi
 
 if docker compose version >/dev/null 2>&1; then
   if docker compose config --services 2>/dev/null | grep -Fxq "headless-sync"; then
