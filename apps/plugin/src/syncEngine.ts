@@ -11,6 +11,9 @@ export interface SyncEngineOptions {
   deviceId: string;
   maxBatchSize?: number;
   onRemoteMarkdown?: (path: string, content: string) => Promise<void> | void;
+  onRealtimeOpen?: () => void;
+  onRealtimeClose?: () => void;
+  onRealtimeError?: () => void;
 }
 
 export class SyncEngine {
@@ -101,23 +104,38 @@ export class SyncEngine {
   }
 
   startRealtime(): void {
-    if (this.realtimeSocket) {
+    if (
+      this.realtimeSocket &&
+      (this.realtimeSocket.readyState === WebSocket.OPEN ||
+        this.realtimeSocket.readyState === WebSocket.CONNECTING)
+    ) {
       return;
     }
 
+    this.realtimeSocket = null;
     const since = this.stateStore.getCursor(this.options.vaultId);
     this.realtimeSocket = this.transport.openRealtime(
       this.options.vaultId,
       since,
-      async (payload) => {
-        if (isRealtimeEvent(payload)) {
-          const typedPayload = payload;
-          await this.applyRemoteOp(typedPayload.opType, typedPayload.payload);
-          await this.stateStore.setCursor(this.options.vaultId, typedPayload.seq);
+      {
+        onMessage: async (payload) => {
+          if (isRealtimeEvent(payload)) {
+            const typedPayload = payload;
+            await this.applyRemoteOp(typedPayload.opType, typedPayload.payload);
+            await this.stateStore.setCursor(this.options.vaultId, typedPayload.seq);
+          }
+        },
+        onOpen: () => {
+          this.options.onRealtimeOpen?.();
+        },
+        onClose: () => {
+          this.realtimeSocket = null;
+          this.options.onRealtimeClose?.();
+        },
+        onError: () => {
+          this.telemetry.track("realtime_socket_error", "warn");
+          this.options.onRealtimeError?.();
         }
-      },
-      () => {
-        this.telemetry.track("realtime_socket_error", "warn");
       }
     );
   }
@@ -128,6 +146,10 @@ export class SyncEngine {
     }
     this.realtimeSocket.close();
     this.realtimeSocket = null;
+  }
+
+  isRealtimeConnected(): boolean {
+    return this.realtimeSocket?.readyState === WebSocket.OPEN;
   }
 
   private async retryWithBackoff(): Promise<void> {

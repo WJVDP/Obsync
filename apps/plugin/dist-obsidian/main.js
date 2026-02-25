@@ -8554,7 +8554,7 @@ var SyncTransport = class {
     const params2 = new URLSearchParams({ since: String(since), deviceId });
     return this.request(`/v1/vaults/${vaultId}/sync/pull?${params2.toString()}`);
   }
-  openRealtime(vaultId, since, onMessage, onError) {
+  openRealtime(vaultId, since, handlers) {
     const endpoint = this.options.baseUrl.replace(/^http/, "ws");
     const params2 = new URLSearchParams({
       since: String(since),
@@ -8563,14 +8563,14 @@ var SyncTransport = class {
     const socket = new WebSocket(`${endpoint}/v1/vaults/${vaultId}/realtime?${params2.toString()}`);
     socket.addEventListener("message", (event) => {
       try {
-        onMessage(JSON.parse(String(event.data)));
+        handlers.onMessage(JSON.parse(String(event.data)));
       } catch {
-        onMessage(event.data);
+        handlers.onMessage(event.data);
       }
     });
-    if (onError) {
-      socket.addEventListener("error", onError);
-    }
+    socket.addEventListener("open", () => handlers.onOpen?.());
+    socket.addEventListener("close", () => handlers.onClose?.());
+    socket.addEventListener("error", (event) => handlers.onError?.(event));
     return socket;
   }
 };
@@ -8749,22 +8749,33 @@ var SyncEngine = class {
     await this.stateStore.setCursor(this.options.vaultId, response.watermark);
   }
   startRealtime() {
-    if (this.realtimeSocket) {
+    if (this.realtimeSocket && (this.realtimeSocket.readyState === WebSocket.OPEN || this.realtimeSocket.readyState === WebSocket.CONNECTING)) {
       return;
     }
+    this.realtimeSocket = null;
     const since = this.stateStore.getCursor(this.options.vaultId);
     this.realtimeSocket = this.transport.openRealtime(
       this.options.vaultId,
       since,
-      async (payload) => {
-        if (isRealtimeEvent(payload)) {
-          const typedPayload = payload;
-          await this.applyRemoteOp(typedPayload.opType, typedPayload.payload);
-          await this.stateStore.setCursor(this.options.vaultId, typedPayload.seq);
+      {
+        onMessage: async (payload) => {
+          if (isRealtimeEvent(payload)) {
+            const typedPayload = payload;
+            await this.applyRemoteOp(typedPayload.opType, typedPayload.payload);
+            await this.stateStore.setCursor(this.options.vaultId, typedPayload.seq);
+          }
+        },
+        onOpen: () => {
+          this.options.onRealtimeOpen?.();
+        },
+        onClose: () => {
+          this.realtimeSocket = null;
+          this.options.onRealtimeClose?.();
+        },
+        onError: () => {
+          this.telemetry.track("realtime_socket_error", "warn");
+          this.options.onRealtimeError?.();
         }
-      },
-      () => {
-        this.telemetry.track("realtime_socket_error", "warn");
       }
     );
   }
@@ -8774,6 +8785,9 @@ var SyncEngine = class {
     }
     this.realtimeSocket.close();
     this.realtimeSocket = null;
+  }
+  isRealtimeConnected() {
+    return this.realtimeSocket?.readyState === WebSocket.OPEN;
   }
   async retryWithBackoff() {
     const baseMs = 300;
@@ -8837,6 +8851,8 @@ var DEFAULT_SETTINGS = {
   autoConnectOnLoad: false,
   realtimeEnabled: true
 };
+var PERIODIC_PULL_INTERVAL_MS = 3e4;
+var MAX_RECONNECT_DELAY_MS = 3e4;
 var ObsidianPluginDataPersistence = class {
   constructor(plugin) {
     this.plugin = plugin;
@@ -8859,6 +8875,12 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
     __publicField(this, "captureUnsubscribe", null);
     __publicField(this, "syncEngine", null);
     __publicField(this, "suppressedPaths", /* @__PURE__ */ new Map());
+    __publicField(this, "statusBarEl", null);
+    __publicField(this, "currentStatus", "disconnected");
+    __publicField(this, "periodicPullTimer", null);
+    __publicField(this, "reconnectTimer", null);
+    __publicField(this, "reconnectAttempt", 0);
+    __publicField(this, "shouldReconnectRealtime", false);
   }
   async onload() {
     await this.loadSettings();
@@ -8866,6 +8888,8 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
       this.settings.deviceId = v4_default();
       await this.saveSettings();
     }
+    this.statusBarEl = this.addStatusBarItem();
+    this.setConnectionStatus("disconnected");
     this.captureUnsubscribe = this.eventCapture.onEvent((event) => {
       void this.onCapturedEvent(event);
     });
@@ -8885,6 +8909,13 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
         void this.syncNow();
       }
     });
+    this.addCommand({
+      id: "obsync-disconnect",
+      name: "Obsync: Disconnect",
+      callback: () => {
+        this.disconnect();
+      }
+    });
     if (this.settings.autoConnectOnLoad) {
       void this.connectAndStart();
     }
@@ -8892,13 +8923,15 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
   onunload() {
     this.captureUnsubscribe?.();
     this.captureUnsubscribe = null;
-    this.syncEngine?.stopRealtime();
+    this.disconnect();
   }
   async connectAndStart() {
     if (!this.settings.vaultId) {
       new import_obsidian.Notice("Obsync: Set Vault ID in settings first");
       return;
     }
+    this.disconnect();
+    this.setConnectionStatus("connecting");
     try {
       const token = await this.resolveToken();
       const stateStore = new SyncStateStore(new ObsidianPluginDataPersistence(this));
@@ -8913,6 +8946,21 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
           deviceId: this.settings.deviceId,
           onRemoteMarkdown: async (path, content) => {
             await this.applyRemoteMarkdown(path, content);
+          },
+          onRealtimeOpen: () => {
+            this.reconnectAttempt = 0;
+            this.clearReconnectTimer();
+            this.setConnectionStatus("connected_live");
+          },
+          onRealtimeClose: () => {
+            if (this.shouldReconnectRealtime) {
+              this.scheduleRealtimeReconnect("socket closed");
+            }
+          },
+          onRealtimeError: () => {
+            if (this.shouldReconnectRealtime) {
+              this.scheduleRealtimeReconnect("socket error");
+            }
           }
         },
         transport,
@@ -8921,12 +8969,18 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
         telemetry
       );
       await this.syncEngine.initialize();
+      await this.syncEngine.flushOutbox();
       await this.syncEngine.pullOnce();
+      this.startPeriodicPullLoop();
       if (this.settings.realtimeEnabled) {
-        this.syncEngine.startRealtime();
+        this.shouldReconnectRealtime = true;
+        this.startRealtime();
+      } else {
+        this.setConnectionStatus("connected_polling");
       }
       new import_obsidian.Notice("Obsync connected");
     } catch (error) {
+      this.setConnectionStatus("error", String(error));
       new import_obsidian.Notice(`Obsync connect failed: ${String(error)}`);
     }
   }
@@ -8937,26 +8991,45 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
     if (!this.syncEngine) {
       return;
     }
+    this.setConnectionStatus("syncing");
     try {
       await this.syncEngine.flushOutbox();
       await this.syncEngine.pullOnce();
+      this.refreshSteadyStateStatus();
       new import_obsidian.Notice("Obsync sync complete");
     } catch (error) {
+      this.setConnectionStatus("error", String(error));
       new import_obsidian.Notice(`Obsync sync failed: ${String(error)}`);
     }
   }
+  disconnect() {
+    this.shouldReconnectRealtime = false;
+    this.clearReconnectTimer();
+    this.clearPeriodicPullLoop();
+    this.syncEngine?.stopRealtime();
+    this.syncEngine = null;
+    this.reconnectAttempt = 0;
+    this.setConnectionStatus("disconnected");
+  }
   async loadSettings() {
+    const fileSettings = await this.readSettingsFile();
+    if (fileSettings) {
+      this.settings = {
+        ...DEFAULT_SETTINGS,
+        ...fileSettings
+      };
+      return;
+    }
     const loaded = await this.readPluginData();
     const rootSettings = loaded.settings ?? loaded;
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...rootSettings
     };
+    await this.saveSettings();
   }
   async saveSettings() {
-    const data = await this.readPluginData();
-    data.settings = this.settings;
-    await this.writePluginData(data);
+    await this.writeSettingsFile(this.settings);
   }
   async onCapturedEvent(event) {
     if (!this.syncEngine) {
@@ -8968,6 +9041,7 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
     try {
       await this.syncEngine.handleVaultEvent(event);
     } catch (error) {
+      this.setConnectionStatus("error", String(error));
       new import_obsidian.Notice(`Obsync event sync failed: ${String(error)}`);
     }
   }
@@ -9094,6 +9168,113 @@ var ObsyncPlugin = class extends import_obsidian.Plugin {
       }
     }
   }
+  startRealtime() {
+    if (!this.syncEngine) {
+      return;
+    }
+    const label = this.reconnectAttempt > 0 ? "reconnecting" : "connecting";
+    this.setConnectionStatus(label, this.reconnectAttempt > 0 ? `attempt ${this.reconnectAttempt}` : void 0);
+    this.syncEngine.startRealtime();
+  }
+  scheduleRealtimeReconnect(reason) {
+    if (!this.syncEngine || !this.shouldReconnectRealtime) {
+      return;
+    }
+    if (this.reconnectTimer) {
+      return;
+    }
+    const exponential = Math.min(MAX_RECONNECT_DELAY_MS, 1e3 * 2 ** this.reconnectAttempt);
+    const jitter = Math.floor(Math.random() * 300);
+    const delayMs = exponential + jitter;
+    this.reconnectAttempt += 1;
+    this.setConnectionStatus("reconnecting", `${Math.ceil(delayMs / 1e3)}s (${reason})`);
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.syncEngine || !this.shouldReconnectRealtime) {
+        return;
+      }
+      this.startRealtime();
+    }, delayMs);
+  }
+  clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+  startPeriodicPullLoop() {
+    this.clearPeriodicPullLoop();
+    this.periodicPullTimer = window.setInterval(() => {
+      void this.periodicPullTick();
+    }, PERIODIC_PULL_INTERVAL_MS);
+  }
+  clearPeriodicPullLoop() {
+    if (this.periodicPullTimer) {
+      window.clearInterval(this.periodicPullTimer);
+      this.periodicPullTimer = null;
+    }
+  }
+  async periodicPullTick() {
+    if (!this.syncEngine) {
+      return;
+    }
+    try {
+      await this.syncEngine.flushOutbox();
+      await this.syncEngine.pullOnce();
+      if (!this.syncEngine.isRealtimeConnected()) {
+        this.setConnectionStatus("connected_polling", "fallback pull");
+      }
+    } catch (error) {
+      this.setConnectionStatus("error", `poll failed: ${String(error)}`);
+    }
+  }
+  refreshSteadyStateStatus() {
+    if (!this.syncEngine) {
+      this.setConnectionStatus("disconnected");
+      return;
+    }
+    if (this.settings.realtimeEnabled && this.syncEngine.isRealtimeConnected()) {
+      this.setConnectionStatus("connected_live");
+      return;
+    }
+    this.setConnectionStatus("connected_polling");
+  }
+  setConnectionStatus(status, detail) {
+    this.currentStatus = status;
+    if (!this.statusBarEl) {
+      return;
+    }
+    const label = status === "disconnected" ? "Disconnected" : status === "connecting" ? "Connecting" : status === "connected_live" ? "Live" : status === "connected_polling" ? "Polling" : status === "reconnecting" ? "Reconnecting" : status === "syncing" ? "Syncing" : "Error";
+    this.statusBarEl.setText(`Obsync: ${label}${detail ? ` (${detail})` : ""}`);
+  }
+  getSettingsPath() {
+    return (0, import_obsidian.normalizePath)(`${this.app.vault.configDir}/plugins/${this.manifest.id}/settings.json`);
+  }
+  getSettingsDirPath() {
+    return (0, import_obsidian.normalizePath)(`${this.app.vault.configDir}/plugins/${this.manifest.id}`);
+  }
+  async readSettingsFile() {
+    const path = this.getSettingsPath();
+    try {
+      const exists = await this.app.vault.adapter.exists(path);
+      if (!exists) {
+        return null;
+      }
+      const raw = await this.app.vault.adapter.read(path);
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  async writeSettingsFile(settings) {
+    const dir = this.getSettingsDirPath();
+    const path = this.getSettingsPath();
+    const dirExists = await this.app.vault.adapter.exists(dir);
+    if (!dirExists) {
+      await this.app.vault.adapter.mkdir(dir);
+    }
+    await this.app.vault.adapter.write(path, JSON.stringify(settings, null, 2));
+  }
   async readPluginData() {
     return await this.loadData() ?? {};
   }
@@ -9151,6 +9332,9 @@ var ObsyncSettingTab = class extends import_obsidian.PluginSettingTab {
       (toggle) => toggle.setValue(this.plugin.settings.realtimeEnabled).onChange(async (value) => {
         this.plugin.settings.realtimeEnabled = value;
         await this.plugin.saveSettings();
+        if (value) {
+          await this.plugin.connectAndStart();
+        }
       })
     );
     new import_obsidian.Setting(containerEl).setName("Auto connect on load").setDesc("Connect when Obsidian starts").addToggle(
