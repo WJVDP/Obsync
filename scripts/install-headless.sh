@@ -221,17 +221,142 @@ if [ -z "$SYNC_BASE_URL" ]; then
       ;;
   esac
 fi
-EMAIL="$(ask_input "Account email" "${OBSYNC_HEADLESS_EMAIL:-user@example.com}")"
-PASSWORD="$(ask_secret "Account password")"
-if [ -z "$PASSWORD" ]; then
-  echo "Password is required." >&2
+existing_api_token="$(read_env_var "$ENV_FILE" "HEADLESS_API_TOKEN")"
+HEADLESS_API_TOKEN="$existing_api_token"
+USE_EXISTING_TOKEN=0
+if [ -n "$existing_api_token" ]; then
+  if ask_yes_no "Existing HEADLESS_API_TOKEN found. Skip email/password and reuse it?" "Y"; then
+    USE_EXISTING_TOKEN=1
+  fi
+fi
+
+JWT=""
+VAULT_ID=""
+if [ "$USE_EXISTING_TOKEN" -eq 1 ]; then
+  VAULT_ID="$(ask_input "Vault ID (required when reusing existing API token)" "$default_vault_id")"
+  if [ -z "$VAULT_ID" ]; then
+    echo "Vault ID is required when reusing HEADLESS_API_TOKEN." >&2
+    exit 1
+  fi
+else
+  EMAIL="$(ask_input "Account email" "${OBSYNC_HEADLESS_EMAIL:-user@example.com}")"
+  PASSWORD="$(ask_secret "Account password")"
+  if [ -z "$PASSWORD" ]; then
+    echo "Password is required." >&2
+    exit 1
+  fi
+  VAULT_ID="$(ask_input "Vault ID (leave empty to create a vault)" "$default_vault_id")"
+  VAULT_NAME=""
+  if [ -z "$VAULT_ID" ]; then
+    VAULT_NAME="$(ask_input "Vault name (used when creating vault)" "Personal Vault")"
+  fi
+
+  EMAIL_JSON="$(json_escape "$EMAIL")"
+  PASSWORD_JSON="$(json_escape "$PASSWORD")"
+
+  login_response_file="$(mktemp)"
+  register_tmp_file "$login_response_file"
+  login_status="$(curl -sS -o "$login_response_file" -w "%{http_code}" "$BASE_URL/v1/auth/login" \
+    -H "content-type: application/json" \
+    -d "{\"email\":\"$EMAIL_JSON\",\"password\":\"$PASSWORD_JSON\"}")"
+  login_body="$(cat "$login_response_file")"
+  if [ "$login_status" -lt 200 ] || [ "$login_status" -ge 300 ]; then
+    login_error="$(extract_json_string "message" "$login_body")"
+    if [ -z "$login_error" ]; then
+      login_error="$login_body"
+    fi
+    echo "Login failed ($login_status): $login_error" >&2
+    exit 1
+  fi
+
+  JWT="$(extract_json_string "token" "$login_body")"
+  if [ -z "$JWT" ]; then
+    echo "Login response missing token." >&2
+    exit 1
+  fi
+
+  if [ -z "$VAULT_ID" ]; then
+    VAULT_NAME_JSON="$(json_escape "$VAULT_NAME")"
+    vault_response_file="$(mktemp)"
+    register_tmp_file "$vault_response_file"
+    vault_status="$(curl -sS -o "$vault_response_file" -w "%{http_code}" "$BASE_URL/v1/vaults" \
+      -H "authorization: Bearer $JWT" \
+      -H "content-type: application/json" \
+      -d "{\"name\":\"$VAULT_NAME_JSON\"}")"
+    vault_body="$(cat "$vault_response_file")"
+    if [ "$vault_status" -lt 200 ] || [ "$vault_status" -ge 300 ]; then
+      vault_error="$(extract_json_string "message" "$vault_body")"
+      if [ -z "$vault_error" ]; then
+        vault_error="$vault_body"
+      fi
+      echo "Vault creation failed ($vault_status): $vault_error" >&2
+      exit 1
+    fi
+    VAULT_ID="$(extract_json_string "id" "$vault_body")"
+    if [ -z "$VAULT_ID" ]; then
+      echo "Vault creation response missing id." >&2
+      exit 1
+    fi
+    echo "Created vault: $VAULT_ID"
+  fi
+
+  should_rotate_token=1
+  if [ -n "$existing_api_token" ]; then
+    if ask_yes_no "Existing HEADLESS_API_TOKEN found. Keep existing token?" "Y"; then
+      should_rotate_token=0
+    fi
+  fi
+
+  if [ "$should_rotate_token" -eq 1 ]; then
+    hostname_value="$(hostname 2>/dev/null || uname -n || echo "unknown-host")"
+    safe_hostname="$(printf "%s" "$hostname_value" | sed 's/[^A-Za-z0-9._-]/-/g')"
+    key_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    key_name="headless-sync-$safe_hostname-$key_timestamp"
+    key_name_json="$(json_escape "$key_name")"
+
+    apikey_response_file="$(mktemp)"
+    register_tmp_file "$apikey_response_file"
+    apikey_status="$(curl -sS -o "$apikey_response_file" -w "%{http_code}" "$BASE_URL/v1/apikeys" \
+      -H "authorization: Bearer $JWT" \
+      -H "content-type: application/json" \
+      -d "{\"name\":\"$key_name_json\",\"scopes\":[\"read\",\"write\"]}")"
+    apikey_body="$(cat "$apikey_response_file")"
+    if [ "$apikey_status" -lt 200 ] || [ "$apikey_status" -ge 300 ]; then
+      apikey_error="$(extract_json_string "message" "$apikey_body")"
+      if [ -z "$apikey_error" ]; then
+        apikey_error="$apikey_body"
+      fi
+      echo "API key creation failed ($apikey_status): $apikey_error" >&2
+      exit 1
+    fi
+
+    HEADLESS_API_TOKEN="$(extract_json_string "apiKey" "$apikey_body")"
+    if [ -z "$HEADLESS_API_TOKEN" ]; then
+      echo "API key response missing apiKey." >&2
+      exit 1
+    fi
+  fi
+fi
+
+if [ -z "$HEADLESS_API_TOKEN" ]; then
+  echo "No API key available to persist." >&2
   exit 1
 fi
-VAULT_ID="$(ask_input "Vault ID (leave empty to create a vault)" "$default_vault_id")"
-VAULT_NAME=""
-if [ -z "$VAULT_ID" ]; then
-  VAULT_NAME="$(ask_input "Vault name (used when creating vault)" "Personal Vault")"
+
+status_response_file="$(mktemp)"
+register_tmp_file "$status_response_file"
+status_code="$(curl -sS -o "$status_response_file" -w "%{http_code}" "$BASE_URL/v1/vaults/$VAULT_ID/status" \
+  -H "authorization: Bearer $HEADLESS_API_TOKEN")"
+status_body="$(cat "$status_response_file")"
+if [ "$status_code" -lt 200 ] || [ "$status_code" -ge 300 ]; then
+  status_error="$(extract_json_string "message" "$status_body")"
+  if [ -z "$status_error" ]; then
+    status_error="$status_body"
+  fi
+  echo "Vault/token validation failed ($status_code): $status_error" >&2
+  exit 1
 fi
+
 MIRROR_PATH="$(ask_input "Mirror path on host" "$default_mirror_path")"
 SEED_SOURCE_PATH="$(ask_input "Initial full-seed source path on this host (optional)" "$default_seed_source_path")"
 HEADLESS_SEED_SOURCE_ENABLED="0"
@@ -247,99 +372,6 @@ if ask_yes_no "Push local markdown edits from mirror back to vault (bidirectiona
   HEADLESS_PUSH_LOCAL_CHANGES="1"
 else
   HEADLESS_PUSH_LOCAL_CHANGES="0"
-fi
-
-EMAIL_JSON="$(json_escape "$EMAIL")"
-PASSWORD_JSON="$(json_escape "$PASSWORD")"
-
-login_response_file="$(mktemp)"
-register_tmp_file "$login_response_file"
-login_status="$(curl -sS -o "$login_response_file" -w "%{http_code}" "$BASE_URL/v1/auth/login" \
-  -H "content-type: application/json" \
-  -d "{\"email\":\"$EMAIL_JSON\",\"password\":\"$PASSWORD_JSON\"}")"
-login_body="$(cat "$login_response_file")"
-if [ "$login_status" -lt 200 ] || [ "$login_status" -ge 300 ]; then
-  login_error="$(extract_json_string "message" "$login_body")"
-  if [ -z "$login_error" ]; then
-    login_error="$login_body"
-  fi
-  echo "Login failed ($login_status): $login_error" >&2
-  exit 1
-fi
-
-JWT="$(extract_json_string "token" "$login_body")"
-if [ -z "$JWT" ]; then
-  echo "Login response missing token." >&2
-  exit 1
-fi
-
-if [ -z "$VAULT_ID" ]; then
-  VAULT_NAME_JSON="$(json_escape "$VAULT_NAME")"
-  vault_response_file="$(mktemp)"
-  register_tmp_file "$vault_response_file"
-  vault_status="$(curl -sS -o "$vault_response_file" -w "%{http_code}" "$BASE_URL/v1/vaults" \
-    -H "authorization: Bearer $JWT" \
-    -H "content-type: application/json" \
-    -d "{\"name\":\"$VAULT_NAME_JSON\"}")"
-  vault_body="$(cat "$vault_response_file")"
-  if [ "$vault_status" -lt 200 ] || [ "$vault_status" -ge 300 ]; then
-    vault_error="$(extract_json_string "message" "$vault_body")"
-    if [ -z "$vault_error" ]; then
-      vault_error="$vault_body"
-    fi
-    echo "Vault creation failed ($vault_status): $vault_error" >&2
-    exit 1
-  fi
-  VAULT_ID="$(extract_json_string "id" "$vault_body")"
-  if [ -z "$VAULT_ID" ]; then
-    echo "Vault creation response missing id." >&2
-    exit 1
-  fi
-  echo "Created vault: $VAULT_ID"
-fi
-
-existing_api_token="$(read_env_var "$ENV_FILE" "HEADLESS_API_TOKEN")"
-HEADLESS_API_TOKEN="$existing_api_token"
-should_rotate_token=1
-if [ -n "$existing_api_token" ]; then
-  if ask_yes_no "Existing HEADLESS_API_TOKEN found. Keep existing token?" "Y"; then
-    should_rotate_token=0
-  fi
-fi
-
-if [ "$should_rotate_token" -eq 1 ]; then
-  hostname_value="$(hostname 2>/dev/null || uname -n || echo "unknown-host")"
-  safe_hostname="$(printf "%s" "$hostname_value" | sed 's/[^A-Za-z0-9._-]/-/g')"
-  key_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  key_name="headless-sync-$safe_hostname-$key_timestamp"
-  key_name_json="$(json_escape "$key_name")"
-
-  apikey_response_file="$(mktemp)"
-  register_tmp_file "$apikey_response_file"
-  apikey_status="$(curl -sS -o "$apikey_response_file" -w "%{http_code}" "$BASE_URL/v1/apikeys" \
-    -H "authorization: Bearer $JWT" \
-    -H "content-type: application/json" \
-    -d "{\"name\":\"$key_name_json\",\"scopes\":[\"read\",\"write\"]}")"
-  apikey_body="$(cat "$apikey_response_file")"
-  if [ "$apikey_status" -lt 200 ] || [ "$apikey_status" -ge 300 ]; then
-    apikey_error="$(extract_json_string "message" "$apikey_body")"
-    if [ -z "$apikey_error" ]; then
-      apikey_error="$apikey_body"
-    fi
-    echo "API key creation failed ($apikey_status): $apikey_error" >&2
-    exit 1
-  fi
-
-  HEADLESS_API_TOKEN="$(extract_json_string "apiKey" "$apikey_body")"
-  if [ -z "$HEADLESS_API_TOKEN" ]; then
-    echo "API key response missing apiKey." >&2
-    exit 1
-  fi
-fi
-
-if [ -z "$HEADLESS_API_TOKEN" ]; then
-  echo "No API key available to persist." >&2
-  exit 1
 fi
 
 if [ "$HEADLESS_SEED_SOURCE_ENABLED" = "1" ]; then

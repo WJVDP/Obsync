@@ -74,7 +74,7 @@ sh scripts/install-headless.sh
 
 Notes:
 
-1. Installer logs in with provided credentials, creates a vault when needed, and creates a `read,write` API key.
+1. Installer can reuse existing `HEADLESS_API_TOKEN` (skipping login) or log in with credentials, create vault when needed, and create/rotate a `read,write` API key.
 2. On reruns, if `HEADLESS_API_TOKEN` already exists, installer prompts whether to keep it or rotate it.
 3. Installer prints only a masked token preview after save.
 4. Installer can optionally run an initial full-seed copy from a host-accessible vault path using `rsync --delete` (excluding `.obsidian`).

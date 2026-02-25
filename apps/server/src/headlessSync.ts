@@ -317,6 +317,25 @@ function encodeMarkdownUpdate(content: string): { updateBase64: string; stateVec
   };
 }
 
+function encodeMarkdownUpdateFromState(
+  previousUpdateBase64: string | undefined,
+  content: string
+): { updateBase64: string; stateVectorBase64: string } {
+  const doc = new Y.Doc();
+  if (previousUpdateBase64) {
+    Y.applyUpdate(doc, Buffer.from(previousUpdateBase64, "base64"));
+  }
+
+  const yText = doc.getText("content");
+  yText.delete(0, yText.length);
+  yText.insert(0, content);
+
+  return {
+    updateBase64: Buffer.from(Y.encodeStateAsUpdate(doc)).toString("base64"),
+    stateVectorBase64: Buffer.from(Y.encodeStateVector(doc)).toString("base64")
+  };
+}
+
 function setMarkdownState(state: HeadlessState, path: string, content: string): void {
   const encoded = encodeMarkdownUpdate(content);
   state.docs[path] = encoded.updateBase64;
@@ -502,7 +521,7 @@ function buildLocalPushPlan(
     }
 
     const content = file.content.toString("utf8");
-    const encoded = encodeMarkdownUpdate(content);
+    const encoded = encodeMarkdownUpdateFromState(nextState.docs[file.relativePath], content);
     nextState.docs[file.relativePath] = encoded.updateBase64;
     nextState.fileHashes[file.relativePath] = file.hash;
     ops.push(

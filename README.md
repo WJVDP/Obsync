@@ -137,7 +137,9 @@ sh scripts/install-headless.sh
 
 The installer will:
 
-1. Prompt for `Base URL`, account email/password, optional `Vault ID`, and mirror path.
+1. Prompt for `Base URL` and either:
+   - reuse existing `HEADLESS_API_TOKEN` (skip email/password), or
+   - enter account email/password for login and optional token rotation.
 2. Optionally run an initial full-seed copy (`rsync --delete`) from a host-accessible source path into the mirror path.
 3. Log in (`POST /v1/auth/login`) and create a vault if no vault id is supplied.
 4. Create a scoped API key (`read`,`write`) or prompt to keep/rotate existing `HEADLESS_API_TOKEN`.
