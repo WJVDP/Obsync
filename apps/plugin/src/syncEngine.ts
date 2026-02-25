@@ -10,6 +10,7 @@ export interface SyncEngineOptions {
   vaultId: string;
   deviceId: string;
   maxBatchSize?: number;
+  onRemoteMarkdown?: (path: string, content: string) => Promise<void> | void;
 }
 
 export class SyncEngine {
@@ -93,12 +94,7 @@ export class SyncEngine {
     const response = await this.transport.pull(this.options.vaultId, since, this.options.deviceId);
 
     for (const op of response.ops) {
-      if (op.opType === "md_update") {
-        const yUpdate = String(op.payload["yUpdateBase64"] ?? "");
-        if (yUpdate && op.payload["path"]) {
-          this.crdtEngine.mergeRemoteUpdate(String(op.payload["path"]), yUpdate);
-        }
-      }
+      await this.applyRemoteOp(op.opType, op.payload);
     }
 
     await this.stateStore.setCursor(this.options.vaultId, response.watermark);
@@ -116,13 +112,7 @@ export class SyncEngine {
       async (payload) => {
         if (isRealtimeEvent(payload)) {
           const typedPayload = payload;
-          if (typedPayload.opType === "md_update") {
-            const path = String(typedPayload.payload.path ?? "");
-            const update = String(typedPayload.payload.yUpdateBase64 ?? "");
-            if (path && update) {
-              this.crdtEngine.mergeRemoteUpdate(path, update);
-            }
-          }
+          await this.applyRemoteOp(typedPayload.opType, typedPayload.payload);
           await this.stateStore.setCursor(this.options.vaultId, typedPayload.seq);
         }
       },
@@ -145,6 +135,21 @@ export class SyncEngine {
     const jitterMs = Math.floor(Math.random() * 100);
     const waitMs = baseMs + jitterMs;
     await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+
+  private async applyRemoteOp(opType: string, payload: Record<string, unknown>): Promise<void> {
+    if (opType !== "md_update") {
+      return;
+    }
+
+    const path = String(payload.path ?? "");
+    const update = String(payload.yUpdateBase64 ?? "");
+    if (!path || !update) {
+      return;
+    }
+
+    const content = this.crdtEngine.mergeRemoteUpdate(path, update);
+    await this.options.onRemoteMarkdown?.(path, content);
   }
 }
 

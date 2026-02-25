@@ -57,6 +57,7 @@ export default class ObsyncPlugin extends Plugin {
   private readonly eventCapture = new VaultEventCapture();
   private captureUnsubscribe: (() => void) | null = null;
   private syncEngine: SyncEngine | null = null;
+  private readonly suppressedPaths = new Map<string, number>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -118,7 +119,10 @@ export default class ObsyncPlugin extends Plugin {
       this.syncEngine = new SyncEngine(
         {
           vaultId: this.settings.vaultId,
-          deviceId: this.settings.deviceId
+          deviceId: this.settings.deviceId,
+          onRemoteMarkdown: async (path, content) => {
+            await this.applyRemoteMarkdown(path, content);
+          }
         },
         transport,
         stateStore,
@@ -174,6 +178,10 @@ export default class ObsyncPlugin extends Plugin {
 
   private async onCapturedEvent(event: VaultEvent): Promise<void> {
     if (!this.syncEngine) {
+      return;
+    }
+
+    if (this.shouldSuppressLocalEvent(event.path)) {
       return;
     }
 
@@ -280,6 +288,53 @@ export default class ObsyncPlugin extends Plugin {
       return await this.app.vault.cachedRead(file);
     } catch {
       return undefined;
+    }
+  }
+
+  private shouldSuppressLocalEvent(path: string): boolean {
+    const expiresAt = this.suppressedPaths.get(path);
+    if (!expiresAt) {
+      return false;
+    }
+
+    if (Date.now() > expiresAt) {
+      this.suppressedPaths.delete(path);
+      return false;
+    }
+
+    return true;
+  }
+
+  private markPathSuppressed(path: string): void {
+    this.suppressedPaths.set(path, Date.now() + 4000);
+  }
+
+  private async applyRemoteMarkdown(path: string, content: string): Promise<void> {
+    this.markPathSuppressed(path);
+    await this.ensureFolderForPath(path);
+
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof TFile) {
+      await this.app.vault.modify(existing, content);
+      return;
+    }
+
+    await this.app.vault.create(path, content);
+  }
+
+  private async ensureFolderForPath(path: string): Promise<void> {
+    const segments = path.split("/").slice(0, -1).filter(Boolean);
+    if (segments.length === 0) {
+      return;
+    }
+
+    let current = "";
+    for (const segment of segments) {
+      current = current ? `${current}/${segment}` : segment;
+      const existing = this.app.vault.getAbstractFileByPath(current);
+      if (!existing) {
+        await this.app.vault.createFolder(current);
+      }
     }
   }
 
