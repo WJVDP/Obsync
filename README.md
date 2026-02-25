@@ -31,19 +31,23 @@ graph LR
   A -->|Realtime Events| R[Realtime Subscribers]
 ```
 
-## One-Line Install Options
-
-Install server stack (new host/VPS):
+## One-Line Install
 
 ```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/WJVDP/Obsync/main/scripts/install-server.sh)"
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/WJVDP/Obsync/main/scripts/install.sh)"
 ```
 
-Install plugin into a local Obsidian vault:
+Fallback (if raw GitHub is unavailable):
 
 ```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/WJVDP/Obsync/main/scripts/install-plugin.sh)" -- "/absolute/path/to/your/vault"
+git clone https://github.com/WJVDP/Obsync.git && cd Obsync && sh scripts/install.sh
 ```
+
+The installer is interactive and will guide you through:
+
+1. Starting the server stack with Docker Compose
+2. Bootstrapping first user + creating initial vault
+3. Optionally installing the Obsidian plugin into a local vault path
 
 ## Quick Start (Repo Checkout)
 
