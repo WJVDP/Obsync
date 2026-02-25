@@ -6,6 +6,7 @@ export interface VaultEvent {
   oldPath?: string;
   timestamp: string;
   content?: string;
+  binaryContentBase64?: string;
 }
 
 export type VaultEventListener = (event: VaultEvent) => void;

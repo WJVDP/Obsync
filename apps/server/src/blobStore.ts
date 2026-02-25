@@ -1,8 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface BlobStore {
   writeChunk(blobHash: string, index: number, raw: Buffer): Promise<string>;
+  readChunk(storageKey: string): Promise<Buffer>;
 }
 
 export class LocalBlobStore implements BlobStore {
@@ -14,5 +15,9 @@ export class LocalBlobStore implements BlobStore {
     const storageKey = join(blobDir, `${index}.bin`);
     await writeFile(storageKey, raw);
     return storageKey;
+  }
+
+  async readChunk(storageKey: string): Promise<Buffer> {
+    return readFile(storageKey);
   }
 }

@@ -18,6 +18,8 @@
 2. p95 push or pull request latency > 1s for 10 minutes.
 3. Realtime reconnect rate exceeds baseline by 2x for 15 minutes.
 4. Blob incomplete (409) ratio > 5% for 30 minutes.
+5. `obsync_http_requests_total` drops unexpectedly to zero during expected traffic windows.
+6. `/metrics` scrape failures persist for 5 minutes.
 
 ## Key Dashboards
 

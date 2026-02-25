@@ -10,6 +10,7 @@ export interface SyncStateSnapshot {
   outbox: SyncOp[];
   cursors: Record<string, number>;
   keyEnvelopes: Record<string, KeyEnvelope[]>;
+  vaultKeys?: Record<string, string>;
 }
 
 export interface SyncStatePersistence {
@@ -21,6 +22,7 @@ export class SyncStateStore {
   private outbox: SyncOp[] = [];
   private cursors = new Map<string, number>();
   private keyEnvelopes = new Map<string, KeyEnvelope[]>();
+  private vaultKeys = new Map<string, string>();
 
   constructor(private readonly persistence?: SyncStatePersistence) {}
 
@@ -37,6 +39,7 @@ export class SyncStateStore {
     this.outbox = snapshot.outbox ?? [];
     this.cursors = new Map(Object.entries(snapshot.cursors ?? {}));
     this.keyEnvelopes = new Map(Object.entries(snapshot.keyEnvelopes ?? {}));
+    this.vaultKeys = new Map(Object.entries(snapshot.vaultKeys ?? {}));
   }
 
   private async persist(): Promise<void> {
@@ -47,7 +50,8 @@ export class SyncStateStore {
     await this.persistence.save({
       outbox: this.outbox,
       cursors: Object.fromEntries(this.cursors.entries()),
-      keyEnvelopes: Object.fromEntries(this.keyEnvelopes.entries())
+      keyEnvelopes: Object.fromEntries(this.keyEnvelopes.entries()),
+      vaultKeys: Object.fromEntries(this.vaultKeys.entries())
     });
   }
 
@@ -82,5 +86,14 @@ export class SyncStateStore {
 
   getKeyEnvelopes(vaultId: string): KeyEnvelope[] {
     return this.keyEnvelopes.get(vaultId) ?? [];
+  }
+
+  async setVaultKey(vaultId: string, keyBase64: string): Promise<void> {
+    this.vaultKeys.set(vaultId, keyBase64);
+    await this.persist();
+  }
+
+  getVaultKey(vaultId: string): string | null {
+    return this.vaultKeys.get(vaultId) ?? null;
   }
 }

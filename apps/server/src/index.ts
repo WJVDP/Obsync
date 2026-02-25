@@ -4,6 +4,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import jwt from "@fastify/jwt";
+import { Counter, Histogram, Registry, collectDefaultMetrics } from "prom-client";
 import { v4 as uuidv4 } from "uuid";
 import {
   BlobCommitRequestSchema,
@@ -14,9 +15,9 @@ import {
 } from "@obsync/shared";
 import { createPool, many, one, runMigrations } from "./db.js";
 import { sendError } from "./errors.js";
-import { hashPassword, verifyPassword } from "./password.js";
+import { verifyPassword } from "./password.js";
 import { readConfig } from "./config.js";
-import { generateApiKeySecret, installAuth } from "./auth.js";
+import { generateApiKeySecret, installAuth, resolveAuthContext } from "./auth.js";
 import { sha256Hex } from "@obsync/shared";
 import { LocalBlobStore, type BlobStore } from "./blobStore.js";
 import { RealtimeBus } from "./realtime.js";
@@ -26,6 +27,14 @@ const config = readConfig();
 const server = Fastify({
   logger: {
     level: config.nodeEnv === "development" ? "debug" : "info",
+    redact: {
+      paths: [
+        "req.headers.authorization",
+        "req.headers.sec-websocket-protocol",
+        "req.query.token"
+      ],
+      censor: "[REDACTED]"
+    },
     transport:
       config.nodeEnv === "development"
         ? {
@@ -55,6 +64,72 @@ await server.register(cors, { origin: true });
 await server.register(jwt, { secret: config.jwtSecret });
 await server.register(websocket);
 await installAuth(server, pool);
+
+const LOGIN_RATE_WINDOW_MS = 5 * 60_000;
+const LOGIN_RATE_LIMIT_BY_IP = 20;
+const LOGIN_RATE_LIMIT_BY_IDENTITY = 10;
+const loginAttemptsByIp = new Map<string, number[]>();
+const loginAttemptsByIdentity = new Map<string, number[]>();
+const requestStartTimes = new WeakMap<object, number>();
+const metricsRegistry = new Registry();
+collectDefaultMetrics({ register: metricsRegistry });
+const httpRequestsTotal = new Counter({
+  name: "obsync_http_requests_total",
+  help: "Count of HTTP requests handled by obsync server.",
+  labelNames: ["method", "route", "status_code"],
+  registers: [metricsRegistry]
+});
+const httpRequestDuration = new Histogram({
+  name: "obsync_http_request_duration_seconds",
+  help: "Request duration in seconds for obsync endpoints.",
+  labelNames: ["method", "route", "status_code"],
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [metricsRegistry]
+});
+
+function pruneAttempts(attempts: number[], now: number): number[] {
+  return attempts.filter((ts) => now - ts < LOGIN_RATE_WINDOW_MS);
+}
+
+function isRateLimited(
+  bucket: Map<string, number[]>,
+  key: string,
+  limit: number,
+  now: number
+): boolean {
+  const attempts = pruneAttempts(bucket.get(key) ?? [], now);
+  bucket.set(key, attempts);
+  return attempts.length >= limit;
+}
+
+function registerAttempt(bucket: Map<string, number[]>, key: string, now: number): void {
+  const attempts = pruneAttempts(bucket.get(key) ?? [], now);
+  attempts.push(now);
+  bucket.set(key, attempts);
+}
+
+function clearAttempts(bucket: Map<string, number[]>, key: string): void {
+  bucket.delete(key);
+}
+
+server.addHook("onRequest", (request, _reply, done) => {
+  requestStartTimes.set(request, Date.now());
+  done();
+});
+
+server.addHook("onResponse", (request, reply, done) => {
+  const startedAt = requestStartTimes.get(request) ?? Date.now();
+  const durationSeconds = Math.max(0, Date.now() - startedAt) / 1000;
+  const route = request.routeOptions.url ?? request.url.split("?")[0];
+  const labels = {
+    method: request.method,
+    route,
+    status_code: String(reply.statusCode)
+  };
+  httpRequestsTotal.inc(labels);
+  httpRequestDuration.observe(labels, durationSeconds);
+  done();
+});
 
 function requireScope(requested: Scope, scopes: Scope[]): boolean {
   return scopes.includes("admin") || scopes.includes(requested);
@@ -94,30 +169,38 @@ server.post("/v1/auth/login", async (request, reply) => {
     });
   }
 
-  let user = await one<{ id: string; email: string; password_hash: string }>(
-    pool,
-    "SELECT id, email, password_hash FROM users WHERE email = $1",
-    [body.email.toLowerCase()]
-  );
+  const normalizedEmail = body.email.toLowerCase();
+  const ipAddress = request.ip;
+  const now = Date.now();
 
-  if (!user) {
-    const passwordHash = hashPassword(body.password);
-    user = await one<{ id: string; email: string; password_hash: string }>(
-      pool,
-      `INSERT INTO users(email, password_hash)
-       VALUES($1, $2)
-       RETURNING id, email, password_hash`,
-      [body.email.toLowerCase(), passwordHash]
-    );
+  if (
+    isRateLimited(loginAttemptsByIp, ipAddress, LOGIN_RATE_LIMIT_BY_IP, now) ||
+    isRateLimited(loginAttemptsByIdentity, normalizedEmail, LOGIN_RATE_LIMIT_BY_IDENTITY, now)
+  ) {
+    return sendError(reply, 429, {
+      code: "AUTH_RATE_LIMITED",
+      message: "Too many login attempts",
+      remediation: "Wait a few minutes before retrying"
+    });
   }
 
+  const user = await one<{ id: string; email: string; password_hash: string }>(
+    pool,
+    "SELECT id, email, password_hash FROM users WHERE email = $1",
+    [normalizedEmail]
+  );
+
   if (!user || !verifyPassword(body.password, user.password_hash)) {
+    registerAttempt(loginAttemptsByIp, ipAddress, now);
+    registerAttempt(loginAttemptsByIdentity, normalizedEmail, now);
     return sendError(reply, 401, {
       code: "INVALID_CREDENTIALS",
       message: "Invalid email or password"
     });
   }
 
+  clearAttempts(loginAttemptsByIp, ipAddress);
+  clearAttempts(loginAttemptsByIdentity, normalizedEmail);
   const token = await reply.jwtSign({ userId: user.id, email: user.email }, { expiresIn: "12h" });
   return reply.send({ token, userId: user.id });
 });
@@ -194,6 +277,35 @@ server.post("/v1/vaults", { preHandler: server.authenticate }, async (request, r
   );
 
   return reply.status(201).send(row);
+});
+
+server.post("/v1/vaults/:vaultId/devices/register", { preHandler: server.authenticate }, async (request, reply) => {
+  if (!request.authContext || !requireScope("write", request.authContext.scopes)) {
+    return sendError(reply, 403, { code: "FORBIDDEN", message: "write scope required" });
+  }
+
+  const { vaultId } = request.params as { vaultId: string };
+  if (!(await assertVaultAccess(vaultId, request.authContext.userId))) {
+    return sendError(reply, 404, { code: "VAULT_NOT_FOUND", message: "Vault not found" });
+  }
+
+  const body = request.body as { deviceId?: string; deviceName?: string; publicKey?: string };
+  if (!body?.deviceId || !body.deviceName || !body.publicKey) {
+    return sendError(reply, 400, {
+      code: "INVALID_DEVICE_PAYLOAD",
+      message: "deviceId, deviceName and publicKey are required"
+    });
+  }
+
+  await pool.query(
+    `INSERT INTO devices(id, user_id, device_name, public_key, last_seen_at)
+     VALUES($1, $2, $3, $4, now())
+     ON CONFLICT (id)
+     DO UPDATE SET user_id = EXCLUDED.user_id, device_name = EXCLUDED.device_name, public_key = EXCLUDED.public_key, last_seen_at = now()`,
+    [body.deviceId, request.authContext.userId, body.deviceName, body.publicKey]
+  );
+
+  return reply.status(201).send({ id: body.deviceId, deviceName: body.deviceName, registered: true });
 });
 
 server.post("/v1/vaults/:vaultId/sync/push", { preHandler: server.authenticate }, async (request, reply) => {
@@ -273,6 +385,11 @@ server.post("/v1/vaults/:vaultId/sync/push", { preHandler: server.authenticate }
      DO UPDATE SET last_applied_seq = EXCLUDED.last_applied_seq, updated_at = now()`,
     [requestBody.deviceId, vaultId, acknowledgedSeq]
   );
+  await pool.query(
+    `UPDATE devices SET last_seen_at = now()
+     WHERE id = $1 AND user_id = $2`,
+    [requestBody.deviceId, request.authContext.userId]
+  );
 
   return reply.send({
     acknowledgedSeq,
@@ -322,6 +439,11 @@ server.get("/v1/vaults/:vaultId/sync/pull", { preHandler: server.authenticate },
        ON CONFLICT (device_id, vault_id)
        DO UPDATE SET last_applied_seq = GREATEST(sync_cursors.last_applied_seq, EXCLUDED.last_applied_seq), updated_at = now()`,
       [query.deviceId, vaultId, watermark]
+    );
+    await pool.query(
+      `UPDATE devices SET last_seen_at = now()
+       WHERE id = $1 AND user_id = $2`,
+      [query.deviceId, request.authContext.userId]
     );
   }
 
@@ -441,6 +563,90 @@ server.put("/v1/vaults/:vaultId/blobs/:blobHash/chunks/:index", { preHandler: se
   });
 });
 
+server.get("/v1/vaults/:vaultId/blobs/:blobHash", { preHandler: server.authenticate }, async (request, reply) => {
+  if (!request.authContext || !requireScope("read", request.authContext.scopes)) {
+    return sendError(reply, 403, { code: "FORBIDDEN", message: "read scope required" });
+  }
+
+  const { vaultId, blobHash } = request.params as { vaultId: string; blobHash: string };
+  if (!(await assertVaultAccess(vaultId, request.authContext.userId))) {
+    return sendError(reply, 404, { code: "VAULT_NOT_FOUND", message: "Vault not found" });
+  }
+
+  const blob = await one<{
+    hash: string;
+    size: string;
+    chunk_count: number;
+    cipher_alg: string;
+    committed_at: Date | null;
+  }>(
+    pool,
+    `SELECT hash, size::text, chunk_count, cipher_alg, committed_at
+     FROM blobs
+     WHERE hash = $1`,
+    [blobHash]
+  );
+  if (!blob || !blob.committed_at) {
+    return sendError(reply, 404, { code: "BLOB_NOT_FOUND", message: "Blob not found" });
+  }
+
+  const chunks = await many<{ idx: number; chunk_hash: string; size: number }>(
+    pool,
+    `SELECT idx, chunk_hash, size
+     FROM blob_chunks
+     WHERE blob_hash = $1
+     ORDER BY idx ASC`,
+    [blobHash]
+  );
+
+  return reply.send({
+    hash: blob.hash,
+    size: Number(blob.size),
+    chunkCount: blob.chunk_count,
+    cipherAlg: blob.cipher_alg,
+    chunks: chunks.map((chunk) => ({
+      index: Number(chunk.idx),
+      chunkHash: chunk.chunk_hash,
+      size: Number(chunk.size)
+    }))
+  });
+});
+
+server.get("/v1/vaults/:vaultId/blobs/:blobHash/chunks/:index", { preHandler: server.authenticate }, async (request, reply) => {
+  if (!request.authContext || !requireScope("read", request.authContext.scopes)) {
+    return sendError(reply, 403, { code: "FORBIDDEN", message: "read scope required" });
+  }
+
+  const { vaultId, blobHash, index } = request.params as {
+    vaultId: string;
+    blobHash: string;
+    index: string;
+  };
+  if (!(await assertVaultAccess(vaultId, request.authContext.userId))) {
+    return sendError(reply, 404, { code: "VAULT_NOT_FOUND", message: "Vault not found" });
+  }
+
+  const chunk = await one<{ storage_key: string; chunk_hash: string; size: number }>(
+    pool,
+    `SELECT storage_key, chunk_hash, size
+     FROM blob_chunks
+     WHERE blob_hash = $1 AND idx = $2`,
+    [blobHash, Number(index)]
+  );
+  if (!chunk) {
+    return sendError(reply, 404, { code: "CHUNK_NOT_FOUND", message: "Chunk not found" });
+  }
+
+  const raw = await blobStore.readChunk(chunk.storage_key);
+  return reply.send({
+    blobHash,
+    index: Number(index),
+    chunkHash: chunk.chunk_hash,
+    size: chunk.size,
+    cipherTextBase64: raw.toString("base64")
+  });
+});
+
 server.post("/v1/vaults/:vaultId/blobs/:blobHash/commit", { preHandler: server.authenticate }, async (request, reply) => {
   if (!request.authContext || !requireScope("write", request.authContext.scopes)) {
     return sendError(reply, 403, { code: "FORBIDDEN", message: "write scope required" });
@@ -527,6 +733,37 @@ server.get("/v1/vaults/:vaultId/status", { preHandler: server.authenticate }, as
   });
 });
 
+server.get("/v1/vaults/:vaultId/keys", { preHandler: server.authenticate }, async (request, reply) => {
+  if (!request.authContext || !requireScope("read", request.authContext.scopes)) {
+    return sendError(reply, 403, { code: "FORBIDDEN", message: "read scope required" });
+  }
+
+  const { vaultId } = request.params as { vaultId: string };
+  if (!(await assertVaultAccess(vaultId, request.authContext.userId))) {
+    return sendError(reply, 404, { code: "VAULT_NOT_FOUND", message: "Vault not found" });
+  }
+
+  const query = request.query as { deviceId?: string };
+  const rows = await many<{ device_id: string; version: number; encrypted_vault_key: string }>(
+    pool,
+    `SELECT device_id, version, encrypted_vault_key
+     FROM key_envelopes
+     WHERE vault_id = $1
+       AND ($2::uuid IS NULL OR device_id = $2::uuid)
+     ORDER BY version DESC`,
+    [vaultId, query.deviceId ?? null]
+  );
+
+  return reply.send({
+    vaultId,
+    envelopes: rows.map((row) => ({
+      deviceId: row.device_id,
+      version: Number(row.version),
+      encryptedVaultKey: row.encrypted_vault_key
+    }))
+  });
+});
+
 server.post("/v1/vaults/:vaultId/keys/rotate", { preHandler: server.authenticate }, async (request, reply) => {
   if (!request.authContext || !requireScope("admin", request.authContext.scopes)) {
     return sendError(reply, 403, { code: "FORBIDDEN", message: "admin scope required" });
@@ -571,24 +808,37 @@ server.get("/v1/admin/health", async (_request, reply) => {
   });
 });
 
+server.get("/metrics", async (_request, reply) => {
+  reply.header("content-type", metricsRegistry.contentType);
+  return reply.send(await metricsRegistry.metrics());
+});
+
 server.get(
   "/v1/vaults/:vaultId/realtime",
   {
-    websocket: true,
-    preValidation: server.authenticate
+    websocket: true
   },
   async (socket, request) => {
-    const authContext = request.authContext;
-    if (!authContext || !requireScope("read", authContext.scopes)) {
-      socket.send(JSON.stringify({ code: "FORBIDDEN", message: "read scope required" }));
+    const authContext = await resolveAuthContext(server, pool, request);
+    request.authContext = authContext;
+
+    const sendRealtimeError = (code: string, message: string, remediation: string): void => {
+      socket.send(JSON.stringify({ type: "error", code, message, remediation }));
       socket.close();
+    };
+
+    if (!authContext || !requireScope("read", authContext.scopes)) {
+      sendRealtimeError(
+        authContext ? "FORBIDDEN" : "UNAUTHORIZED",
+        authContext ? "read scope required" : "Missing or invalid bearer token",
+        authContext ? "Use a key with read scope" : "Provide valid JWT or API key"
+      );
       return;
     }
 
     const { vaultId } = request.params as { vaultId: string };
     if (!(await assertVaultAccess(vaultId, authContext.userId))) {
-      socket.send(JSON.stringify({ code: "VAULT_NOT_FOUND", message: "Vault not found" }));
-      socket.close();
+      sendRealtimeError("VAULT_NOT_FOUND", "Vault not found", "Verify vaultId and owner access");
       return;
     }
 

@@ -6,16 +6,20 @@ import {
   Setting,
   TAbstractFile,
   TFile,
+  TFolder,
   normalizePath,
   setIcon
 } from "obsidian";
+import { generateDeviceKeyPair } from "@obsync/shared";
 import { v4 as uuidv4 } from "uuid";
+import type { ConflictRecord } from "@obsync/shared";
 import { VaultEventCapture, type VaultEvent } from "./event-capture/vaultEventCapture.js";
 import { YjsMarkdownEngine } from "./crdt-engine/yjsEngine.js";
 import { SyncTransport } from "./transport/syncTransport.js";
 import { SyncStateStore, type SyncStatePersistence, type SyncStateSnapshot } from "./state-store/stateStore.js";
 import { SyncEngine } from "./syncEngine.js";
 import { TelemetryClient } from "./telemetry/telemetryClient.js";
+import { ConsoleConflictPresenter } from "./conflict-ui/conflictPresenter.js";
 
 interface ObsyncPluginSettings {
   baseUrl: string;
@@ -24,6 +28,8 @@ interface ObsyncPluginSettings {
   apiToken: string;
   vaultId: string;
   deviceId: string;
+  devicePublicKeyPem: string;
+  devicePrivateKeyPem: string;
   telemetryEnabled: boolean;
   autoConnectOnLoad: boolean;
   realtimeEnabled: boolean;
@@ -50,6 +56,8 @@ const DEFAULT_SETTINGS: ObsyncPluginSettings = {
   apiToken: "",
   vaultId: "",
   deviceId: "",
+  devicePublicKeyPem: "",
+  devicePrivateKeyPem: "",
   telemetryEnabled: false,
   autoConnectOnLoad: false,
   realtimeEnabled: true
@@ -78,6 +86,7 @@ export default class ObsyncPlugin extends Plugin {
   settings: ObsyncPluginSettings = DEFAULT_SETTINGS;
 
   private readonly eventCapture = new VaultEventCapture();
+  private readonly conflictPresenter = new ConsoleConflictPresenter();
   private captureUnsubscribe: (() => void) | null = null;
   private syncEngine: SyncEngine | null = null;
   private readonly suppressedPaths = new Map<string, number>();
@@ -97,6 +106,12 @@ export default class ObsyncPlugin extends Plugin {
 
     if (!this.settings.deviceId) {
       this.settings.deviceId = uuidv4();
+      await this.saveSettings();
+    }
+    if (!this.settings.devicePublicKeyPem || !this.settings.devicePrivateKeyPem) {
+      const keyPair = generateDeviceKeyPair();
+      this.settings.devicePublicKeyPem = keyPair.publicKeyPem;
+      this.settings.devicePrivateKeyPem = keyPair.privateKeyPem;
       await this.saveSettings();
     }
 
@@ -174,8 +189,23 @@ export default class ObsyncPlugin extends Plugin {
         {
           vaultId: this.settings.vaultId,
           deviceId: this.settings.deviceId,
+          deviceName: `Obsidian-${this.settings.deviceId.slice(0, 8)}`,
+          devicePublicKeyPem: this.settings.devicePublicKeyPem,
+          devicePrivateKeyPem: this.settings.devicePrivateKeyPem,
           onRemoteMarkdown: async (path, content) => {
             await this.applyRemoteMarkdown(path, content);
+          },
+          onRemoteFileCreate: async (path, content) => {
+            await this.applyRemoteFileCreate(path, content);
+          },
+          onRemoteFileRename: async (oldPath, newPath) => {
+            await this.applyRemoteFileRename(oldPath, newPath);
+          },
+          onRemoteFileDelete: async (path) => {
+            await this.applyRemoteFileDelete(path);
+          },
+          onRemoteBinaryFile: async (path, content) => {
+            await this.applyRemoteBinaryFile(path, content);
           },
           onRealtimeOpen: () => {
             this.reconnectAttempt = 0;
@@ -306,12 +336,13 @@ export default class ObsyncPlugin extends Plugin {
           return;
         }
 
-        const content = await this.readMarkdown(file);
+        const payload = await this.readFilePayload(file);
         this.eventCapture.emit({
           type: "create",
           path: file.path,
           timestamp: new Date().toISOString(),
-          content
+          content: payload.content,
+          binaryContentBase64: payload.binaryContentBase64
         });
       })
     );
@@ -322,12 +353,13 @@ export default class ObsyncPlugin extends Plugin {
           return;
         }
 
-        const content = await this.readMarkdown(file);
+        const payload = await this.readFilePayload(file);
         this.eventCapture.emit({
           type: "modify",
           path: file.path,
           timestamp: new Date().toISOString(),
-          content
+          content: payload.content,
+          binaryContentBase64: payload.binaryContentBase64
         });
       })
     );
@@ -344,13 +376,13 @@ export default class ObsyncPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("rename", async (file: TAbstractFile, oldPath: string) => {
-        const content = file instanceof TFile ? await this.readMarkdown(file) : undefined;
+        const payload = file instanceof TFile ? await this.readFilePayload(file) : { content: undefined };
         this.eventCapture.emit({
           type: "rename",
           path: file.path,
           oldPath,
           timestamp: new Date().toISOString(),
-          content
+          content: payload.content
         });
       })
     );
@@ -386,15 +418,19 @@ export default class ObsyncPlugin extends Plugin {
     return data.token;
   }
 
-  private async readMarkdown(file: TFile): Promise<string | undefined> {
-    if (file.extension !== "md") {
-      return undefined;
-    }
-
+  private async readFilePayload(file: TFile): Promise<{
+    content?: string;
+    binaryContentBase64?: string;
+  }> {
     try {
-      return await this.app.vault.cachedRead(file);
+      if (file.extension === "md") {
+        return { content: await this.app.vault.cachedRead(file) };
+      }
+
+      const binary = await this.app.vault.readBinary(file);
+      return { binaryContentBase64: Buffer.from(binary).toString("base64") };
     } catch {
-      return undefined;
+      return {};
     }
   }
 
@@ -429,6 +465,81 @@ export default class ObsyncPlugin extends Plugin {
     await this.app.vault.create(path, content);
   }
 
+  private async applyRemoteFileCreate(path: string, content?: string): Promise<void> {
+    this.markPathSuppressed(path);
+    await this.ensureFolderForPath(path);
+
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (!existing) {
+      await this.app.vault.create(path, content ?? "");
+      return;
+    }
+
+    if (!(existing instanceof TFile)) {
+      return;
+    }
+
+    const incoming = content ?? "";
+    const current = await this.app.vault.cachedRead(existing);
+    if (current === incoming) {
+      return;
+    }
+
+    const conflictPath = await this.allocateConflictPath(path);
+    await this.app.vault.create(conflictPath, incoming);
+    this.markPathSuppressed(conflictPath);
+    this.reportConflict(path, `path collision on create; remote copy stored at ${conflictPath}`);
+  }
+
+  private async applyRemoteFileRename(oldPath: string, newPath: string): Promise<void> {
+    const source = this.app.vault.getAbstractFileByPath(oldPath);
+    if (!source || !(source instanceof TFile || source instanceof TFolder)) {
+      return;
+    }
+
+    await this.ensureFolderForPath(newPath);
+    const target = this.app.vault.getAbstractFileByPath(newPath);
+    this.markPathSuppressed(oldPath);
+    this.markPathSuppressed(newPath);
+
+    if (!target) {
+      await this.app.fileManager.renameFile(source, newPath);
+      return;
+    }
+
+    const conflictPath = await this.allocateConflictPath(newPath);
+    this.markPathSuppressed(conflictPath);
+    await this.app.fileManager.renameFile(source, conflictPath);
+    this.reportConflict(newPath, `path collision on rename; remote rename stored at ${conflictPath}`);
+  }
+
+  private async applyRemoteFileDelete(path: string): Promise<void> {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (!existing) {
+      return;
+    }
+
+    this.markPathSuppressed(path);
+    await this.app.vault.delete(existing, true);
+  }
+
+  private async applyRemoteBinaryFile(path: string, content: Buffer): Promise<void> {
+    this.markPathSuppressed(path);
+    await this.ensureFolderForPath(path);
+    const binary = content.buffer.slice(
+      content.byteOffset,
+      content.byteOffset + content.byteLength
+    ) as ArrayBuffer;
+
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof TFile) {
+      await this.app.vault.modifyBinary(existing, binary);
+      return;
+    }
+
+    await this.app.vault.createBinary(path, binary);
+  }
+
   private async ensureFolderForPath(path: string): Promise<void> {
     const segments = path.split("/").slice(0, -1).filter(Boolean);
     if (segments.length === 0) {
@@ -443,6 +554,40 @@ export default class ObsyncPlugin extends Plugin {
         await this.app.vault.createFolder(current);
       }
     }
+  }
+
+  private async allocateConflictPath(path: string): Promise<string> {
+    const slashIndex = path.lastIndexOf("/");
+    const directory = slashIndex >= 0 ? path.slice(0, slashIndex + 1) : "";
+    const filename = slashIndex >= 0 ? path.slice(slashIndex + 1) : path;
+    const dotIndex = filename.lastIndexOf(".");
+    const base = dotIndex > 0 ? filename.slice(0, dotIndex) : filename;
+    const extension = dotIndex > 0 ? filename.slice(dotIndex) : "";
+
+    let attempt = 1;
+    while (true) {
+      const suffix = attempt === 1 ? ".conflict" : `.conflict-${attempt}`;
+      const candidate = `${directory}${base}${suffix}${extension}`;
+      const exists = await this.app.vault.adapter.exists(candidate);
+      if (!exists) {
+        return candidate;
+      }
+      attempt += 1;
+    }
+  }
+
+  private reportConflict(path: string, reason: string): void {
+    const record: ConflictRecord = {
+      id: uuidv4(),
+      vaultId: this.settings.vaultId,
+      fileId: uuidv4(),
+      path,
+      reason,
+      createdAt: new Date().toISOString(),
+      resolution: "pending"
+    };
+    this.conflictPresenter.show(record);
+    new Notice(`Obsync conflict: ${path}`);
   }
 
   private startRealtime(): void {
